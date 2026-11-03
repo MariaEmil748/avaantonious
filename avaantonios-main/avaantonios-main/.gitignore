@@ -1,0 +1,14 @@
+# ⚠️ بيانات حساسة — لا تُرفع إلى GitHub أبدًا
+# church.db : قاعدة البيانات (تحتوي على هاش كلمة مرور الأدمن والجلسات)
+# secret.key : سر توقيع الجلسات (HMAC)
+data/
+*.db
+*.db-shm
+*.db-wal
+secret.key
+
+# تبعيات وإعدادات محلية
+node_modules/
+npm-debug.log*
+.DS_Store
+Thumbs.db

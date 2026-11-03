@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>كنيسة القديس العظيم الأنبا أنطونيوس — أرض اللواء | إيبارشية الجيزة</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' x='4' font-size='26'%3E%E2%98%A6%3C/text%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+  <!-- ===== شريط تنقل زجاجي ===== -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <img src="/images/cross.png" alt="صليب قبطي" class="brand-img" />
+        <div class="brand-text church-name">
+          <span class="diocese">إيبارشية الجيزة</span>
+          <h1>كنيسة القديس العظيم الأنبا أنطونيوس</h1>
+          <span class="loc">أرض اللواء</span>
+          <p class="tagline">مواعيد · قداسات · حجوزات</p>
+        </div>
+      </div>
+      <nav class="main-nav">
+        <button class="nav-btn active" data-view="schedule">المواعيد</button>
+        <button class="nav-btn hidden" data-view="booking" id="nav-booking">طلب ميعاد</button>
+        <button class="nav-btn hidden" data-view="admin">لوحة التحكم</button>
+        <button class="nav-btn account-btn" id="account-btn">تسجيل الدخول</button>
+      </nav>
+    </div>
+    <div class="quick-images" aria-label="صور ودخول سريع">
+      <button class="img-chip" data-article="anthony"><img src="/images/anthony.png" alt="" /><span>الأنبا أنطونيوس</span></button>
+      <button class="img-chip" data-article="church"><img src="/images/ava-antonios.jpeg" alt="" /><span>كنيستنا</span></button>
+      <button class="img-chip" data-article="gospel"><img src="/images/gospel.png" alt="" /><span>الكلمة</span></button>
+      <button class="img-chip" data-article="prayer"><img src="/images/candles.png" alt="" /><span>الصلاة</span></button>
+      <button class="img-chip" data-article="cross"><img src="/images/cross.png" alt="" /><span>الصليب</span></button>
+    </div>
+  </header>
+
+  <!-- ===== الهيرو ===== -->
+  <div class="hero" id="hero">
+    <div class="hero-overlay"></div>
+    <div class="hero-content">
+      <span class="hero-cross">☦</span>
+      <div class="church-name">
+        <span class="diocese">إيبارشية الجيزة</span>
+        <h2>كنيسة القديس العظيم الأنبا أنطونيوس</h2>
+        <span class="loc">أرض اللواء</span>
+      </div>
+      <p class="hero-sub">مواعيد القداسات والاجتماعات، وخدمات الحجز لكل أماكن الكنيسة — في مكانٍ واحد</p>
+      <div class="hero-cta">
+        <button class="btn gold" data-goto="schedule">تصفّح المواعيد</button>
+        <button class="btn outline" data-goto="booking">طلب ميعاد</button>
+      </div>
+    </div>
+  </div>
+
+  <main>
+    <!-- ============ المواعيد ============ -->
+    <section id="view-schedule" class="view active">
+      <div class="section-head">
+        <h2 class="section-title">مواعيد القداسات والاجتماعات</h2>
+        <p class="section-sub">اختر الموسم أو اليوم أو المكان لعرض المواعيد المناسبة</p>
+      </div>
+      <div class="toolbar glass">
+        <div class="field">
+          <label>الموسم</label>
+          <select id="f-season"></select>
+        </div>
+        <div class="field">
+          <label>اليوم</label>
+          <select id="f-day"><option value="">كل الأيام</option></select>
+        </div>
+        <div class="field">
+          <label>المكان</label>
+          <select id="f-place"><option value="">كل الأماكن</option></select>
+        </div>
+        <div class="field">
+          <label>النوع</label>
+          <select id="f-type">
+            <option value="">الكل</option>
+            <option>صلوات طقسية</option>
+            <option>تربية كنسية</option>
+            <option>إجتماع</option>
+          </select>
+        </div>
+        <button id="btn-print" class="btn ghost">🖨 طباعة</button>
+      </div>
+      <div id="season-note" class="note hidden"></div>
+      <div id="schedule-container" class="schedule"></div>
+    </section>
+
+    <!-- ============ الحجز ============ -->
+    <section id="view-booking" class="view">
+      <div class="booking-wrap">
+        <div class="booking-visual">
+          <img src="/images/candles.png" alt="شموع وصليب" />
+          <div class="booking-visual-text">
+            <h3>طلب ميعاد للخدمة</h3>
+            <p>الجميع يتصفّح المواعيد. طلب ميعاد جديد متاح للمسؤولين بعد تسجيل الدخول.</p>
+          </div>
+        </div>
+        <div class="card form-card">
+          <h2>طلب ميعاد / حجز مكان</h2>
+          <p class="muted">بعد دخول الإدارة يمكنك حجز مكان ووقت. النظام يفحص التضارب تلقائيًا.</p>
+          <div id="booking-auth-hint" class="note hidden">
+            لطلب ميعاد سجّل دخول الإدارة (الحسابات من Google Sheet).
+            <button type="button" class="btn gold small" id="hint-login">دخول الإدارة</button>
+          </div>
+          <form id="booking-form" class="form-grid">
+            <div class="field">
+              <label>المكان *</label>
+              <select name="place_id" id="b-place" required></select>
+            </div>
+            <div class="field">
+              <label>التاريخ *</label>
+              <input type="date" name="date" id="b-date" required />
+            </div>
+            <div class="field">
+              <label>من *</label>
+              <input type="time" name="start" id="b-start" required />
+            </div>
+            <div class="field">
+              <label>إلى *</label>
+              <input type="time" name="end" id="b-end" required />
+            </div>
+            <div class="field span2 repeat-row">
+              <label class="check"><input type="checkbox" id="b-repeat" /> يتكرّر أسبوعيًا — نفس المكان والوقت كل نفس اليوم</label>
+              <div class="repeat-sub">
+                <div class="rep-date"><label>حتى تاريخ</label><input type="date" name="repeat_end" id="b-repeat-end" disabled /></div>
+                <span id="b-weekday-hint" class="hint"></span>
+              </div>
+            </div>
+            <div class="field span2">
+              <label>اسم الخدمة / الإجتماع *</label>
+              <input type="text" name="service_name" placeholder="مثال: إجتماع أسرة" required />
+            </div>
+            <div class="field">
+              <label>اسم مقدم الطلب *</label>
+              <input type="text" name="requester_name" required />
+            </div>
+            <div class="field">
+              <label>رقم الموبايل</label>
+              <input type="tel" name="requester_phone" placeholder="01xxxxxxxxx" />
+            </div>
+            <div class="field span2">
+              <label>ملاحظات</label>
+              <textarea name="notes" rows="2"></textarea>
+            </div>
+            <div class="actions span2">
+              <button type="button" id="btn-check" class="btn ghost">فحص التضارب</button>
+              <button type="submit" class="btn primary" id="btn-submit-booking">إرسال الطلب</button>
+            </div>
+          </form>
+          <div id="booking-result"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ لوحة التحكم ============ -->
+    <section id="view-admin" class="view">
+      <div id="admin-login" class="login-card">
+        <img src="/images/cross.png" alt="" class="login-bg" />
+        <div class="login-inner">
+          <h2>تسجيل الدخول</h2>
+          <p class="muted">الحسابات من Google Sheet — عمود <b>level</b>: اكتب <b>1</b> لكل الصلاحيات والموافقة على المواعيد، أو <b>2</b> لطلب ميعاد وانتظار الموافقة</p>
+          <form id="login-form" class="form-grid">
+            <div class="field span2"><label>اسم المستخدم</label><input type="text" name="username" autocomplete="username" required /></div>
+            <div class="field span2"><label>كلمة المرور</label><input type="password" name="password" autocomplete="current-password" required /></div>
+            <div class="actions span2"><button class="btn gold" type="submit">دخول</button></div>
+          </form>
+          <div id="login-result"></div>
+        </div>
+      </div>
+
+      <div id="admin-panel" class="hidden">
+        <div class="admin-head">
+          <div>
+            <h2>لوحة التحكم</h2>
+            <p class="muted">إدارة المواعيد والحجوزات والأماكن والمواسم</p>
+          </div>
+          <div class="admin-actions">
+            <button id="btn-password" class="btn ghost small">🔑 تغيير كلمة المرور</button>
+            <button id="btn-logout" class="btn ghost small">خروج</button>
+          </div>
+        </div>
+
+        <div class="tabs">
+          <button class="tab active" data-tab="bookings">الحجوزات <span id="badge-pending" class="badge"></span></button>
+          <button class="tab" data-tab="schedule">المواعيد</button>
+          <button class="tab" data-tab="seasons">المواسم والأماكن</button>
+          <button class="tab" data-tab="users">المستخدمون</button>
+        </div>
+
+        <!-- الحجوزات -->
+        <div id="tab-bookings" class="tabpanel active">
+          <div class="toolbar glass">
+            <div class="field"><label>الحالة</label>
+              <select id="bk-status">
+                <option value="">الكل</option>
+                <option value="pending">معلق</option>
+                <option value="approved">مقبول</option>
+                <option value="rejected">مرفوض</option>
+              </select>
+            </div>
+          </div>
+          <div id="bookings-list" class="list"></div>
+        </div>
+
+        <!-- المواعيد -->
+        <div id="tab-schedule" class="tabpanel">
+          <div class="toolbar glass">
+            <div class="field"><label>الموسم</label><select id="adm-season"></select></div>
+            <button id="btn-add-schedule" class="btn primary">+ إضافة ميعاد</button>
+          </div>
+          <div id="admin-schedule-list" class="list"></div>
+        </div>
+
+        <!-- المواسم والأماكن -->
+        <div id="tab-seasons" class="tabpanel">
+          <div class="two-col">
+            <div class="card">
+              <h3>المواسم</h3>
+              <form id="season-form" class="inline-form">
+                <input type="text" name="name" placeholder="اسم الموسم (مثال: صوم الرسل)" required />
+                <button class="btn primary small">إضافة</button>
+              </form>
+              <div id="seasons-list" class="list"></div>
+            </div>
+            <div class="card">
+              <h3>الأماكن</h3>
+              <form id="place-form" class="inline-form">
+                <input type="text" name="name" placeholder="اسم المكان / القاعة" required />
+                <button class="btn primary small">إضافة</button>
+              </form>
+              <div id="places-list" class="list"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- المستخدمون وصلاحياتهم -->
+        <div id="tab-users" class="tabpanel">
+          <div class="card">
+            <h3>مستخدمو الموقع</h3>
+            <p class="muted">أي زائر يسجّل من «دخول / حساب جديد» ويصبح «عضوًا» يحجز ويتابع طلباته. من هنا ترفع صلاحيات أي مستخدم بالمهام التي تحتاجها منه.</p>
+            <div id="users-list" class="list"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-head"><h3 id="modal-title"></h3><button id="modal-close" class="x">×</button></div>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <footer class="site-footer">
+    <img src="/images/cross.png" alt="" class="footer-img" />
+    <div class="church-name footer-name">
+      <span class="diocese">إيبارشية الجيزة</span>
+      <p>كنيسة القديس العظيم الأنبا أنطونيوس</p>
+      <span class="loc">أرض اللواء</span>
+    </div>
+    <p class="small">جميع المواعيد قابلة للتحديث</p>
+    <p class="small"><button class="linklike" id="link-admin">دخول الإدارة</button></p>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

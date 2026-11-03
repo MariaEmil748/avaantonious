@@ -1,0 +1,13 @@
+{
+  "name": "church-antony-ard-ellwaa",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "موقع كنيسة القديس العظيم الأنبا أنطونيوس بأرض اللواء - المواعيد والحجز",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}
