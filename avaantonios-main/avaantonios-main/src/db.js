@@ -100,6 +100,7 @@ ensureColumn('bookings', 'repeat', "repeat TEXT NOT NULL DEFAULT 'none'");
 ensureColumn('bookings', 'repeat_end', "repeat_end TEXT");
 ensureColumn('bookings', 'user_id', "user_id INTEGER");
 ensureColumn('bookings', 'requester_username', "requester_username TEXT DEFAULT ''");
+ensureColumn('bookings', 'decided_by', "decided_by TEXT DEFAULT ''");
 ensureColumn('users', 'perms', "perms TEXT NOT NULL DEFAULT '[]'");
 
 // ---------- helpers ----------
@@ -370,9 +371,29 @@ export function updateBooking(id, e) {
       e.repeat === 'weekly' ? 'weekly' : 'none', e.repeat === 'weekly' ? (e.repeat_end || null) : null, id);
   return getBooking(id);
 }
-export function setBookingStatus(id, status) {
-  db.prepare(`UPDATE bookings SET status=?, decided_at=datetime('now') WHERE id=?`).run(status, id);
+export function setBookingStatus(id, status, decidedBy = '') {
+  if (status === 'pending') {
+    db.prepare(`UPDATE bookings SET status='pending', decided_at=NULL, decided_by='' WHERE id=?`).run(id);
+  } else {
+    db.prepare(`UPDATE bookings SET status=?, decided_at=datetime('now'), decided_by=? WHERE id=?`).run(status, decidedBy || '', id);
+  }
   return getBooking(id);
+}
+export function syncBookingStatusFromSheet(id, status, decidedAt = null, decidedBy = '') {
+  if (status === 'pending') {
+    db.prepare(`UPDATE bookings SET status='pending', decided_at=NULL, decided_by='' WHERE id=?`).run(id);
+  } else {
+    db.prepare(`UPDATE bookings SET status=?, decided_at=COALESCE(?, datetime('now')), decided_by=COALESCE(NULLIF(?,''), 'Google Sheet') WHERE id=?`)
+      .run(status, decidedAt, decidedBy, id);
+  }
+  return getBooking(id);
+}
+export function insertBookingWithId(b) {
+  db.prepare(`INSERT OR REPLACE INTO bookings (id, place_id, date, start, end, service_name, requester_name, requester_phone, notes, status, created_at, decided_at, repeat, repeat_end, user_id, requester_username, decided_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(b.id, b.place_id, b.date, b.start, b.end, b.service_name, b.requester_name, b.requester_phone || '', b.notes || '', b.status || 'pending',
+      b.created_at || new Date().toISOString(), b.decided_at || null, b.repeat || 'none', b.repeat_end || null, b.user_id || null, b.requester_username || '', b.decided_by || '');
+  return getBooking(b.id);
 }
 export function deleteBooking(id) { db.prepare('DELETE FROM bookings WHERE id=?').run(id); }
 

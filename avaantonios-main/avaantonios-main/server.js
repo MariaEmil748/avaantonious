@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, normalize, extname, resolve } from 'node:path';
 import * as db from './src/db.js';
 import * as sheetAuth from './src/sheetAuth.js';
+import * as sheetBookings from './src/sheetBookings.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, 'public');
@@ -71,6 +72,29 @@ function readBody(req) {
 function validTime(t) { return /^\d{2}:\d{2}$/.test(String(t || '')); }
 function validDate(d) { return /^\d{4}-\d{2}-\d{2}$/.test(String(d || '')); }
 
+// ---------- مزامنة دورية تلقائية مع Google Sheet ----------
+let lastSyncAt = 0;
+let syncPromise = null;
+async function autoSyncWithSheet(minIntervalMs = 5000) {
+  const now = Date.now();
+  if (now - lastSyncAt < minIntervalMs) return;
+  if (syncPromise) return syncPromise;
+  lastSyncAt = now;
+  syncPromise = (async () => {
+    try {
+      if (sheetBookings.isConfigured()) {
+        await sheetBookings.syncFromSheet(db);
+      }
+    } catch (e) {
+      // silent
+    } finally {
+      syncPromise = null;
+    }
+  })();
+  return syncPromise;
+}
+setInterval(() => autoSyncWithSheet(8000), 8000);
+
 // ---------- routing ----------
 async function handleRequest(req, res) {
   try {
@@ -97,6 +121,7 @@ async function api(req, res, path, q) {
   }
 
   if (path === '/api/schedule' && method === 'GET') {
+    await autoSyncWithSheet(3000);
     const rows = db.listSchedule({ seasonId: q.get('seasonId') || null, day: q.get('day'), placeId: q.get('placeId') || null, type: q.get('type') || null });
     if (!canSeePhones(req)) for (const r of rows) { r.has_phone = !!r.phone; r.phone = ''; }
     return json(res, 200, rows);
@@ -108,6 +133,7 @@ async function api(req, res, path, q) {
   }
 
   if (path === '/api/approved-bookings' && method === 'GET') {
+    await autoSyncWithSheet(3000);
     const from = q.get('from') || new Date().toISOString().slice(0, 10);
     const rows = db.listApprovedUpcoming({ from, placeId: q.get('placeId') || null });
     if (!canSeePhones(req)) for (const r of rows) { r.has_contact = !!r.requester_phone; r.requester_phone = ''; }
@@ -178,6 +204,8 @@ async function api(req, res, path, q) {
       user_id: u ? u.id : null,
       requester_username: session ? session.username : (u ? u.username : ''),
     });
+    // إرسال الميعاد فوراً إلى Google Sheet ليكون كمخزن للمواعيد
+    sheetBookings.onBookingCreated(row).catch(e => console.error('[Sheet Sync Error]', e.message));
     return json(res, 201, { booking: row, approved: manager });
   }
 
@@ -230,32 +258,99 @@ async function api(req, res, path, q) {
 
   if (path === '/api/admin/bookings' && method === 'GET') {
     if (need('bookings.approve', 'bookings.edit')) return;
+    await autoSyncWithSheet(2500);
     return json(res, 200, db.listBookings({ status: q.get('status') || null }));
   }
 
   let m;
-  if ((m = path.match(/^\/api\/admin\/bookings\/(\d+)\/(approve|reject)$/)) && method === 'POST') {
+  if ((m = path.match(/^\/api\/admin\/bookings\/(\d+)\/(approve|reject|reset)$/)) && method === 'POST') {
     if (need('bookings.approve')) return;
     const id = Number(m[1]); const body = await readBody(req);
     const bk = db.getBooking(id); if (!bk) return json(res, 404, { error: 'غير موجود' });
-    if (m[2] === 'reject') return json(res, 200, { booking: db.setBookingStatus(id, 'rejected') });
+    const deciderName = (admin && (admin.display_name || admin.username)) || 'أدمن مستوى 1';
+
+    if (m[2] === 'reset') {
+      const updated = db.setBookingStatus(id, 'pending', '');
+      sheetBookings.onBookingStatusChanged(id, 'pending', '').catch(e => console.error('[Sheet Sync Error]', e.message));
+      return json(res, 200, { booking: updated });
+    }
+
+    if (m[2] === 'reject') {
+      const updated = db.setBookingStatus(id, 'rejected', deciderName);
+      sheetBookings.onBookingStatusChanged(id, 'rejected', deciderName).catch(e => console.error('[Sheet Sync Error]', e.message));
+      return json(res, 200, { booking: updated });
+    }
     // approve
     const conflicts = db.findBookingConflicts({ place_id: bk.place_id, date: bk.date, start: bk.start, end: bk.end, repeat: bk.repeat, repeat_end: bk.repeat_end, ignoreBookingId: id });
     if (conflicts.length && !body.force) return json(res, 409, { error: 'لا يمكن القبول لوجود تضارب', conflicts });
-    return json(res, 200, { booking: db.setBookingStatus(id, 'approved') });
+    const updated = db.setBookingStatus(id, 'approved', deciderName);
+    sheetBookings.onBookingStatusChanged(id, 'approved', deciderName).catch(e => console.error('[Sheet Sync Error]', e.message));
+    return json(res, 200, { booking: updated });
+  }
+
+  // مزامنة وإعدادات Google Sheet للمواعيد
+  if (path === '/api/admin/bookings/sheet-script' && method === 'GET') {
+    if (need('bookings.approve', 'bookings.edit')) return;
+    try {
+      const scriptCode = await readFile(join(__dirname, 'scripts', 'googleAppsScript.js'), 'utf8');
+      return send(res, 200, scriptCode, { 'Content-Type': 'text/plain; charset=utf-8' });
+    } catch {
+      return json(res, 404, { error: 'Script file not found' });
+    }
+  }
+
+  if (path === '/api/admin/bookings/sheet-status' && method === 'GET') {
+    if (need('bookings.approve', 'bookings.edit')) return;
+    const cfg = sheetBookings.loadBookingsConfig();
+    return json(res, 200, {
+      configured: !!cfg.webhookUrl,
+      webhookUrl: cfg.webhookUrl,
+      sheetId: cfg.sheetId,
+      sheetUrl: cfg.sheetUrl,
+      tab: cfg.tab,
+    });
+  }
+
+  if (path === '/api/admin/bookings/sheet-config' && method === 'POST') {
+    if (need('bookings.approve', 'bookings.edit')) return;
+    const b = await readBody(req);
+    const next = sheetBookings.saveBookingsConfig({
+      googleBookingsWebhookUrl: String(b.webhookUrl || '').trim(),
+      googleBookingsTab: String(b.tab || 'المواعيد').trim(),
+    });
+    return json(res, 200, { ok: true, config: next });
+  }
+
+  if (path === '/api/admin/bookings/sync-sheet' && method === 'POST') {
+    if (need('bookings.approve', 'bookings.edit')) return;
+    const resSync = await sheetBookings.syncFromSheet(db);
+    return json(res, 200, resSync);
+  }
+
+  if (path === '/api/admin/bookings/push-all-to-sheet' && method === 'POST') {
+    if (need('bookings.approve', 'bookings.edit')) return;
+    const all = db.listBookings();
+    const resPush = await sheetBookings.pushAllBookings(all);
+    return json(res, 200, { ok: resPush.ok, count: all.length, res: resPush });
   }
 
   if ((m = path.match(/^\/api\/admin\/bookings\/(\d+)$/))) {
     if (need('bookings.edit')) return;
     const id = Number(m[1]);
-    if (method === 'DELETE') { db.deleteBooking(id); return json(res, 200, { ok: true }); }
+    if (method === 'DELETE') {
+      db.deleteBooking(id);
+      sheetBookings.onBookingDeleted(id).catch(e => console.error('[Sheet Sync Error]', e.message));
+      return json(res, 200, { ok: true });
+    }
     if (method === 'PUT') {
       const b = await readBody(req);
       const cur = db.getBooking(id); if (!cur) return json(res, 404, { error: 'غير موجود' });
       const err = validateBooking(b); if (err) return json(res, 400, { error: err });
       const conflicts = db.findBookingConflicts({ ...b, ignoreBookingId: id });
       if (conflicts.length && !b.force) return json(res, 409, { error: 'التعديل بيتعارض مع ميعاد/حجز تاني', conflicts });
-      return json(res, 200, { booking: db.updateBooking(id, b) });
+      const updated = db.updateBooking(id, b);
+      sheetBookings.onBookingUpdated(updated).catch(e => console.error('[Sheet Sync Error]', e.message));
+      return json(res, 200, { booking: updated });
     }
   }
 
@@ -409,10 +504,15 @@ function tryListen(p, tries) {
     console.log(`\n  موقع كنيسة الأنبا أنطونيوس بأرض اللواء`);
     console.log(`  يعمل على:  http://localhost:${p}   ← افتح الرابط ده بالظبط`);
     if (sheetAuth.isConfigured()) {
-      console.log(`  دخول الإدارة: من Google Sheet — أضف/احذف المستخدمين من الجدول ثم سجّل الدخول في الموقع\n`);
+      console.log(`  دخول الإدارة: من Google Sheet — أضف/احذف المستخدمين من الجدول ثم سجّل الدخول في الموقع`);
     } else {
       console.log(`  دخول الإدارة:  admin / admin123`);
-      console.log(`  لربط المسؤولين بـ Google Sheet: ضع رقم الجدول في config.json (googleSheetId)\n`);
+      console.log(`  لربط المسؤولين بـ Google Sheet: ضع رقم الجدول في config.json (googleSheetId)`);
+    }
+    if (sheetBookings.isConfigured()) {
+      console.log(`  مزامنة المواعيد: متصل بـ Google Sheet (المواعيد) عبر Webhook ✅\n`);
+    } else {
+      console.log(`  مزامنة المواعيد: راجع GOOGLE_SHEETS_SETUP.md لربط حفظ المواعيد وقرارات الأدمن مع Google Sheet.\n`);
     }
   });
   server.listen(p);
