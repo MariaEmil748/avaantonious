@@ -31,7 +31,7 @@ function actorPerms() {
 }
 function can(perm) { return actorPerms().has(perm); }
 function isActor() { return actorPerms().size > 0; }
-function canRequestTime() { return !!state.admin; }
+function canRequestTime() { return !!(state.admin || state.user); }
 function isPanelActor() { return !!(state.admin && Number(state.admin.level) === 1); }
 
 // ---------- مقالات الصور الروحية (تفتحها الصور في الهيدر والمعرض) ----------
@@ -366,7 +366,10 @@ function bindBooking() {
     if (status === 201) {
       const repTxt = payload.repeat === 'weekly' ? ` وهو <b>متكرّر أسبوعيًا</b> حتى ${esc(payload.repeat_end)}` : '';
       const approved = body.approved !== false;
-      out.innerHTML = `<div class="conflict-box ok">✅ ${approved ? 'تم اعتماد الميعاد وسيظهر في الجدول العام' : 'تم إرسال الطلب وهو قيد المراجعة'}.${repTxt}<br>رقم الطلب: <b>#${body.booking.id}</b></div>`;
+      const statusDesc = approved
+        ? 'تم اعتماد الميعاد وسيظهر في جدول المواعيد وفي Google Sheet مباشرة'
+        : 'تم إرسال طلب الميعاد وحفظه في Google Sheet، وبانتظار موافقة الأدمن (مستوى 1)';
+      out.innerHTML = `<div class="conflict-box ok">✅ ${statusDesc}.${repTxt}<br>رقم الطلب: <b>#${body.booking.id}</b></div>`;
       f.reset(); $('#b-date').value = new Date().toISOString().slice(0, 10); if (rep) syncRepeat(); syncBookingGate();
       loadSchedule();
       toast(approved ? 'تم اعتماد الميعاد' : 'تم إرسال الطلب', 'ok');
@@ -422,6 +425,10 @@ function bindAdmin() {
   $('#btn-add-schedule').onclick = () => openScheduleModal(null);
   $('#season-form').onsubmit = async (ev) => { ev.preventDefault(); const name = ev.target.name.value.trim(); const { status, body } = await api('/api/admin/seasons', { method: 'POST', body: JSON.stringify({ name }) }); if (status === 201) { ev.target.reset(); await refreshMeta(); loadSeasonsAdmin(); toast('تمت إضافة الموسم', 'ok'); } else toast(body.error, 'bad'); };
   $('#place-form').onsubmit = async (ev) => { ev.preventDefault(); const name = ev.target.name.value.trim(); const { status, body } = await api('/api/admin/places', { method: 'POST', body: JSON.stringify({ name }) }); if (status === 201) { ev.target.reset(); await refreshMeta(); loadPlacesAdmin(); toast('تمت إضافة المكان', 'ok'); } else toast(body.error, 'bad'); };
+
+  $('#btn-sync-sheet')?.addEventListener('click', syncGoogleSheet);
+  $('#btn-push-sheet')?.addEventListener('click', pushAllToGoogleSheet);
+  $('#btn-sheet-settings')?.addEventListener('click', openSheetSettingsModal);
 }
 function selectTab(tab) {
   const perms = actorPerms();
@@ -473,6 +480,7 @@ async function refreshMeta() {
 
 // --- bookings ---
 async function loadBookings() {
+  loadSheetStatus();
   const st = $('#bk-status').value;
   const { body } = await api('/api/admin/bookings' + (st ? '?status=' + st : ''));
   state.bookings = body;
@@ -489,6 +497,7 @@ async function loadBookings() {
           ${can('bookings.edit') ? `<button class="btn ghost small" data-act="edit" data-id="${b.id}">تعديل</button>` : ''}
           ${(can('bookings.approve') && b.status !== 'approved') ? `<button class="btn ok small" data-act="approve" data-id="${b.id}">قبول</button>` : ''}
           ${(can('bookings.approve') && b.status !== 'rejected') ? `<button class="btn ghost small" data-act="reject" data-id="${b.id}">رفض</button>` : ''}
+          ${(can('bookings.approve') && b.status !== 'pending') ? `<button class="btn ghost small" data-act="reset" data-id="${b.id}" title="إرجاع كمعلق بدون قرار">⏳ تعليق</button>` : ''}
           ${can('bookings.edit') ? `<button class="btn bad small" data-act="delete" data-id="${b.id}">حذف</button>` : ''}
           ${b.requester_phone ? `<button class="btn gold small" data-act="wa" data-id="${b.id}">📲 واتساب</button>` : ''}
         </div>
@@ -507,13 +516,31 @@ async function loadBookings() {
     el.querySelector('[data-act="reject"]')?.addEventListener('click', async () => {
       const { status } = await api(`/api/admin/bookings/${b.id}/reject`, { method: 'POST', body: '{}' });
       if (status !== 200) { toast('خطأ في الرفض', 'bad'); return; }
-      loadBookings(); toast('تم الرفض'); notifyWhatsApp(b, 'rejected');
+      loadBookings(); toast('تم الرفض وتحديثه في Google Sheet'); notifyWhatsApp(b, 'rejected');
+    });
+    el.querySelector('[data-act="reset"]')?.addEventListener('click', async () => {
+      const { status } = await api(`/api/admin/bookings/${b.id}/reset`, { method: 'POST', body: '{}' });
+      if (status !== 200) { toast('خطأ في إرجاع الحالة', 'bad'); return; }
+      loadBookings(); toast('تم إرجاع الميعاد لحالة معلق (بدون قرار) وتحديثه في Google Sheet');
     });
     el.querySelector('[data-act="wa"]')?.addEventListener('click', () => notifyWhatsApp(b, b.status === 'approved' ? 'approved' : b.status === 'rejected' ? 'rejected' : 'pending'));
-    el.querySelector('[data-act="delete"]')?.addEventListener('click', async () => { if (confirm('حذف هذا الحجز؟')) { await api(`/api/admin/bookings/${b.id}`, { method: 'DELETE' }); loadBookings(); toast('تم الحذف'); } });
+    el.querySelector('[data-act="delete"]')?.addEventListener('click', async () => {
+      if (confirm('حذف هذا الحجز نهائياً من الموقع وGoogle Sheet؟')) {
+        await api(`/api/admin/bookings/${b.id}`, { method: 'DELETE' });
+        loadBookings();
+        toast('تم حذف الحجز من الموقع وGoogle Sheet');
+      }
+    });
     list.appendChild(el);
   }
 }
+
+// تحديث دوري لقائمة الحجوزات لمزامنة أي تعديل يجريه الأدمن في Google Sheet فورياً
+setInterval(() => {
+  if (state.admin && $('#tab-bookings')?.classList.contains('active')) {
+    loadBookings();
+  }
+}, 6000);
 // ---------- إشعار واتساب عبر wa.me (بدون API — الأدمن يضغط إرسال) ----------
 function waPhone(p) {
   const d = String(p || '').replace(/\D/g, '');
@@ -544,15 +571,167 @@ function notifyWhatsApp(b, decision) {
 }
 async function approveBooking(b) {
   const { status, body } = await api(`/api/admin/bookings/${b.id}/approve`, { method: 'POST', body: '{}' });
-  if (status === 200) { loadBookings(); toast('تم قبول الحجز', 'ok'); notifyWhatsApp(b, 'approved'); return; }
+  if (status === 200) { loadBookings(); toast('تم قبول الحجز وتحديثه في Google Sheet ✅', 'ok'); notifyWhatsApp(b, 'approved'); return; }
   if (status === 409) {
     openModal('تضارب عند القبول', `<div class="conflict-box bad">⚠️ ${esc(body.error)}:
       <ul>${body.conflicts.map(c => `<li>${esc(c.label)} — <b dir="ltr">${esc(c.time)}</b></li>`).join('')}</ul></div>
       <div class="actions" style="margin-top:14px"><button class="btn ghost" id="m-cancel">إلغاء</button>
       <button class="btn bad" id="m-force">قبول رغم التضارب</button></div>`);
     $('#m-cancel').onclick = closeModal;
-    $('#m-force').onclick = async () => { await api(`/api/admin/bookings/${b.id}/approve`, { method: 'POST', body: JSON.stringify({ force: true }) }); closeModal(); loadBookings(); toast('تم القبول (تجاوز التضارب)', 'ok'); notifyWhatsApp(b, 'approved'); };
+    $('#m-force').onclick = async () => { await api(`/api/admin/bookings/${b.id}/approve`, { method: 'POST', body: JSON.stringify({ force: true }) }); closeModal(); loadBookings(); toast('تم القبول وتحديثه في Google Sheet ✅', 'ok'); notifyWhatsApp(b, 'approved'); };
   } else toast(body.error || 'خطأ', 'bad');
+}
+
+// ---------- تكامل Google Sheet للمواعيد ----------
+async function loadSheetStatus() {
+  const { status, body } = await api('/api/admin/bookings/sheet-status');
+  if (status !== 200 || !body) return;
+  const badge = $('#sheet-status-badge');
+  const sub = $('#sheet-status-sub');
+  const link = $('#link-open-sheet');
+  if (body.configured) {
+    if (badge) {
+      badge.textContent = 'متصل ومُفعل ✅';
+      badge.className = 'badge badge-ok';
+    }
+    if (sub) {
+      sub.textContent = 'كل طلب ميعاد يُرسل فوراً إلى Google Sheet، وقرارات الأدمن (قبول/رفض) تُحدّث تلقائياً.';
+    }
+  } else {
+    if (badge) {
+      badge.textContent = 'غير مفعل ⚠️';
+      badge.className = 'badge badge-warn';
+    }
+    if (sub) {
+      sub.textContent = 'لم يُضبط رابط مزامنة Google Sheet بعد — اضغط على «إعدادات الربط» لتفعيله خلال دقيقتين.';
+    }
+  }
+  if (link) {
+    if (body.sheetUrl) {
+      link.href = body.sheetUrl;
+      link.classList.remove('hidden');
+    } else {
+      link.classList.add('hidden');
+    }
+  }
+}
+
+async function syncGoogleSheet() {
+  const btn = $('#btn-sync-sheet');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ جاري المزامنة...'; }
+  try {
+    const { status, body } = await api('/api/admin/bookings/sync-sheet', { method: 'POST' });
+    if (status === 200 && body.ok) {
+      if (body.updatedCount > 0) {
+        toast(`تمت المزامنة بنجاح: تم تحديث ${body.updatedCount} ميعاد من Google Sheet ✅`, 'ok');
+      } else {
+        toast('تمت المزامنة بنجاح: لا توجد تغييرات جديدة في الجدول ✅', 'ok');
+      }
+      loadBookings();
+      loadSchedule();
+    } else {
+      toast(body.error || 'تعذرت المزامنة مع Google Sheet', 'bad');
+    }
+  } catch (err) {
+    toast('خطأ في المزامنة مع الخادم', 'bad');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 مزامنة من الجدول'; }
+  }
+}
+
+async function pushAllToGoogleSheet() {
+  if (!confirm('هل تريد رفع جميع المواعيد المسجلة حالياً في الموقع إلى جدول Google Sheet؟')) return;
+  const btn = $('#btn-push-sheet');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ جاري الرفع...'; }
+  try {
+    const { status, body } = await api('/api/admin/bookings/push-all-to-sheet', { method: 'POST' });
+    if (status === 200 && body.ok) {
+      toast(`تم رفع ${body.count} ميعاد إلى Google Sheet بنجاح ✅`, 'ok');
+      loadSheetStatus();
+    } else {
+      toast((body && body.error) || 'تعذر الرفع إلى Google Sheet — تأكد من صحة الرابط', 'bad');
+    }
+  } catch (err) {
+    toast('خطأ في إرسال البيانات للخادم', 'bad');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📤 رفع المواعيد للجدول'; }
+  }
+}
+
+async function openSheetSettingsModal() {
+  const { status, body } = await api('/api/admin/bookings/sheet-status');
+  const curUrl = (body && body.webhookUrl) || '';
+  const curTab = (body && body.tab) || 'المواعيد';
+  const sheetUrl = (body && body.sheetUrl) || 'https://docs.google.com/spreadsheets/d/1Gq5huRGfF1qeB8cDSUEDlgb5LsKiLhB9WUv8X9_-Ujo/edit';
+
+  openModal('إعداد ربط المواعيد مع Google Sheet', `
+    <div class="sheet-setup-modal" dir="rtl">
+      <p class="muted">يتم حفظ جميع طلبات المواعيد في تبويب «${esc(curTab)}» في Google Sheet، وتحديث حالة القبول والرفض فورياً للأدمن.</p>
+
+      <form id="sheet-config-form" class="form-grid" style="margin-top:12px">
+        <div class="field span2">
+          <label>رابط تطبيق الويب (Google Web App URL) *</label>
+          <input type="url" name="webhookUrl" id="cfg-webhook-url" value="${esc(curUrl)}" placeholder="https://script.google.com/macros/s/.../exec" required />
+          <span class="hint">الرابط الناتج عن نشر كود Apps Script (الذي ينتهي بـ /exec)</span>
+        </div>
+        <div class="field">
+          <label>اسم تبويب المواعيد في الجدول</label>
+          <input type="text" name="tab" value="${esc(curTab)}" placeholder="المواعيد" />
+        </div>
+        <div class="actions span2" style="margin-top:8px">
+          <button type="submit" class="btn primary">💾 حفظ الإعدادات</button>
+          <a href="${esc(sheetUrl)}" target="_blank" rel="noopener" class="btn ghost">📋 فتح جدول Google Sheet</a>
+        </div>
+      </form>
+
+      <div style="margin-top:20px; border-top: 1px solid var(--line); padding-top:14px">
+        <h4>خطوات التفعيل السريعة (تأخذ دقيقتين فقط):</h4>
+        <ol class="steps-list">
+          <li>افتح جدولك في Google Sheet (<a href="${esc(sheetUrl)}" target="_blank" rel="noopener">اضغط هنا لفتح الجدول</a>).</li>
+          <li>من القائمة العلوية اختر: <b>إضافات (Extensions)</b> ← <b>Apps Script</b>.</li>
+          <li>امسح أي كود موجود في المحرر وضع كود المزامنة مكانه واضغط حفظ 💾.</li>
+          <li>اضغط زر <b>نشر (Deploy)</b> في أعلى اليمين ← <b>نشر جديد (New deployment)</b>.</li>
+          <li>اختر نوع <b>تطبيق ويب (Web app)</b>، واجعل «من يملك حق الوصول» = <b>أي شخص (Anyone)</b>، ثم اضغط نشر.</li>
+          <li>انسخ <b>رابط تطبيق الويب (Web app URL)</b> وضعه في الخانة بالأعلى ثم اضغط حفظ.</li>
+        </ol>
+        <button type="button" id="btn-copy-script" class="btn ghost small" style="margin-top:4px">📋 نسخ كود Apps Script للحافظة</button>
+      </div>
+    </div>
+  `);
+
+  $('#sheet-config-form').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const url = f.webhookUrl.value.trim();
+    const tab = f.tab.value.trim() || 'المواعيد';
+    const { status: st, body: b } = await api('/api/admin/bookings/sheet-config', {
+      method: 'POST',
+      body: JSON.stringify({ webhookUrl: url, tab }),
+    });
+    if (st === 200 && b.ok) {
+      toast('تم حفظ إعدادات Google Sheet بنجاح ✅', 'ok');
+      closeModal();
+      loadSheetStatus();
+    } else {
+      toast((b && b.error) || 'حدث خطأ في حفظ الإعدادات', 'bad');
+    }
+  };
+
+  $('#btn-copy-script').onclick = async () => {
+    try {
+      const res = await fetch('/api/admin/bookings/sheet-script');
+      let code = '';
+      if (res.ok) {
+        code = await res.text();
+      } else {
+        code = `// برجاء نسخ الكود من ملف scripts/googleAppsScript.js داخل مجلد المشروع`;
+      }
+      await navigator.clipboard.writeText(code);
+      toast('تم نسخ كود Apps Script إلى الحافظة بنجاح 📋', 'ok');
+    } catch {
+      toast('راجع ملف scripts/googleAppsScript.js لنسخ الكود', 'bad');
+    }
+  };
 }
 
 // --- تعديل حجز (إدارة) ---
