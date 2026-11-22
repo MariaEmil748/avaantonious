@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^git show-ref --verify refs/remotes/mina/main; git show -s --format=\"Mina main: %H %cs %s\" mina/main; git show -s --format=\"Origin main: %H %cs %s\" origin/main; git merge-base --is-ancestor origin/main mina/main; if \\(\\$LASTEXITCODE -eq 0\\) \\{ 'origin/main is an ancestor of mina/main' \\} else \\{ 'origin/main is not an ancestor of mina/main' \\}; git diff --stat mina/main\\.\\.\\.HEAD; git status --porcelain=v1$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
