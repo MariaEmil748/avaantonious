@@ -1,36 +1,273 @@
 /**
  * =========================================================================
  * كنيسة القديس العظيم الأنبا أنطونيوس بأرض اللواء — إيبارشية الجيزة
- * كود مزامنة جدول المواعيد والحجوزات والجدول الثابت (Google Apps Script)
+ * الشيت الشامل الموحد: المستخدمين + المواعيد الثابتة + طلبات الحجز
  * =========================================================================
  *
- * يشمل هذا الكود:
- * 1. تبويب «المواعيد»: لمخزن طلبات الحجز الخاصة والمناسبات وقرارات الأدمن (قبول / رفض / معلق / حذف).
- * 2. تبويب «المواعيد الثابتة»: للقداسات الإلهية، والاجتماعات، ومدارس الأحد الأسبوعية.
+ * يشمل هذا الكود إدارة 3 تبويبات في جدول واحد متكامل:
+ * 1. تبويب «المستخدمين»: حسابات المسؤولين والخدام ومستويات الصلاحيات (level 1 و level 2).
+ * 2. تبويب «المواعيد الثابتة»: القداسات الإلهية، الاجتماعات، ومدارس الأحد (مُحمّل بالـ 40 ميعاد).
+ * 3. تبويب «المواعيد»: طلبات حجز القاعات والمذابح وقرارات الأدمن (قبول / رفض / معلق / حذف).
  *
- * طريقة التحديث في دقيقتين:
- * 1. افتح جدول Google Sheet الخاص بك.
- * 2. من القائمة العلوية: الإضافات (Extensions) -> Apps Script.
- * 3. امسح الكود القديم وضع هذا الكود بالكامل مكانه.
+ * طريقة التشغيل السريعة:
+ * 1. افتح جدول Google Sheet الجديد.
+ * 2. من القائمة: إضافات (Extensions) -> Apps Script.
+ * 3. امسح أي كود موجود والصق هذا الكود بالكامل مكانه.
  * 4. اضغط حفظ (أيقونة الديسك 💾 أو Ctrl + S).
- * 5. اضغط «نشر» (Deploy) الأزرق في أعلى اليمين -> «إدارة عمليات النشر» (Manage deployments)
- *    -> اضغط أيقونة القلم ✏️ للتعديل -> اختر Version: New version -> اضغط Deploy.
+ * 5. من القائمة المنسدلة بالأعلى اختر دالة: initAllSheets ثم اضغط Run (تشغيل)
+ *    (سيقوم فوراً بإنشاء وتنسيق وتلوين كل التبويبات الثلاثة وتعبئتها بالبيانات الكاملة!).
+ * 6. اضغط زر «نشر» (Deploy) الأزرق في أعلى اليمين -> «نشر جديد» (New deployment).
+ *    - نوع النشر: Web app (تطبيق ويب).
+ *    - تنفيذ كـ: Me (أنا).
+ *    - من يملك حق الوصول: Anyone (أي شخص).
+ * 7. انسخ رابط تطبيق الويب (Web app URL الذي ينتهي بـ /exec) وأرسله هنا لربطه فوراً.
  * =========================================================================
  */
 
-const BOOKINGS_SHEET_NAME = 'المواعيد';
-const SCHEDULE_SHEET_NAME = 'المواعيد الثابتة';
+const TAB_USERS = 'المستخدمين';
+const TAB_SCHEDULE = 'المواعيد الثابتة';
+const TAB_BOOKINGS = 'المواعيد';
+
+/**
+ * إضافة قائمة مخصصة في شريط أدوات Google Sheet لتسهيل إدارة الموقع
+ */
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('☦ كنيسة الأنبا أنطونيوس ☦')
+    .addItem('✨ تهيئة وتنسيق كل التبويبات بالبيانات الافتراضية', 'initAllSheets')
+    .addItem('📤 رفع المواعيد الثابتة الافتراضية (40 ميعاد)', 'seedFixedSchedule')
+    .addItem('👥 تهيئة تبويب المستخدمين الافتراضيين', 'seedUsers')
+    .addToUi();
+}
+
+/**
+ * تهيئة كافة التبويبات الثلاثة بضغطة زر واحدة
+ */
+function initAllSheets() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  getOrCreateUsersSheet(ss);
+  getOrCreateFixedScheduleSheet(ss);
+  getOrCreateBookingsSheet(ss);
+}
 
 // =========================================================================
-// 1) إدارة تبويب «المواعيد» (الحجوزات والخدمات)
+// 1) تبويب «المستخدمين» (حسابات الأدمن والخدام)
 // =========================================================================
-function getOrCreateBookingsSheet() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(BOOKINGS_SHEET_NAME);
+function getOrCreateUsersSheet(ss) {
+  ss = ss || SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(TAB_USERS);
   if (!sheet) {
-    sheet = ss.insertSheet(BOOKINGS_SHEET_NAME);
-    initBookingsSheet(sheet);
+    sheet = ss.insertSheet(TAB_USERS);
   }
+  initUsersSheet(sheet);
+  return sheet;
+}
+
+function initUsersSheet(sheet) {
+  try { sheet.setRightToLeft(true); } catch (e) {}
+
+  const headers = [
+    'username',       // 1: اسم المستخدم (للإنجليزي بدون مسافات)
+    'password',       // 2: كلمة المرور
+    'display_name',   // 3: الاسم المعروض للخدام والموقع
+    'level',          // 4: المستوى (1 = مدير عام كامل، 2 = خادم لطلب ميعاد)
+    'active',         // 5: مفعل (1 = مفعل، 0 = معطل)
+    'phone',          // 6: رقم الموبايل
+    'notes'           // 7: ملاحظات والصلاحيات
+  ];
+
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  const headerRange = sheet.getRange(1, 1, 1, headers.length);
+  headerRange.setBackground('#0f172a'); // كحلي غامق فخم
+  headerRange.setFontColor('#ffffff');
+  headerRange.setFontWeight('bold');
+  headerRange.setHorizontalAlignment('center');
+  headerRange.setVerticalAlignment('middle');
+  sheet.setRowHeight(1, 38);
+  sheet.setFrozenRows(1);
+
+  // قائمة منسدلة للمستوى (1: مدير عام، 2: خادم)
+  const levelRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(['1', '2'], true)
+    .setAllowInvalid(true).build();
+  sheet.getRange('D2:D500').setDataValidation(levelRule);
+  sheet.getRange('D2:D500').setHorizontalAlignment('center');
+
+  // قائمة منسدلة للحالة (1: مفعل، 0: معطل)
+  const activeRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(['1', '0'], true)
+    .setAllowInvalid(true).build();
+  sheet.getRange('E2:E500').setDataValidation(activeRule);
+  sheet.getRange('E2:E500').setHorizontalAlignment('center');
+
+  // تنسيق شرطي للمستوى: 1 بنفسجي فاتح، 2 أزرق سماوي
+  const rules = sheet.getConditionalFormatRules();
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('1').setBackground('#f3e8ff').setFontColor('#6b21a8')
+    .setRanges([sheet.getRange('D2:D500')]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('2').setBackground('#e0f2fe').setFontColor('#0369a1')
+    .setRanges([sheet.getRange('D2:D500')]).build());
+  sheet.setConditionalFormatRules(rules);
+
+  // إضافة المستخدمين الافتراضيين لو كان التبويب فارغاً
+  if (sheet.getLastRow() < 2) {
+    seedUsers(sheet);
+  }
+
+  for (let c = 1; c <= headers.length; c++) sheet.autoResizeColumn(c);
+}
+
+function seedUsers(sheet) {
+  sheet = sheet || getOrCreateUsersSheet();
+  const defaultUsers = [
+    ['Mina.Fekry', 'mina123', 'مينا فكري', '1', '1', '01280800693', 'مدير النظام (أدمن مستوى 1 - تحكم كامل)'],
+    ['maria', 'maria', 'maria', '2', '1', '01280800693', 'خادم ومسؤول حجز (مستوى 2 - طلب ميعاد)']
+  ];
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).clearContent();
+  }
+  sheet.getRange(2, 1, defaultUsers.length, 7).setValues(defaultUsers);
+}
+
+// =========================================================================
+// 2) تبويب «المواعيد الثابتة» (القداسات والاجتماعات ومدارس الأحد)
+// =========================================================================
+function getOrCreateFixedScheduleSheet(ss) {
+  ss = ss || SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(TAB_SCHEDULE);
+  if (!sheet) {
+    sheet = ss.insertSheet(TAB_SCHEDULE);
+  }
+  initFixedScheduleSheet(sheet);
+  return sheet;
+}
+
+function initFixedScheduleSheet(sheet) {
+  try { sheet.setRightToLeft(true); } catch (e) {}
+
+  const headers = [
+    'م',                   // 1
+    'الموسم',              // 2
+    'اليوم',               // 3
+    'النوع',               // 4
+    'اسم الخدمة / النشاط',   // 5
+    'المرحلة / الفئة',      // 6
+    'المكان',              // 7
+    'من',                 // 8
+    'إلى',                // 9
+    'المسؤول / الخادم',     // 10
+    'رقم الموبايل',         // 11
+    'ملاحظات'             // 12
+  ];
+
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  const headerRange = sheet.getRange(1, 1, 1, headers.length);
+  headerRange.setBackground('#7f1d1d'); // عنابي كنسي وقور
+  headerRange.setFontColor('#ffffff');
+  headerRange.setFontWeight('bold');
+  headerRange.setHorizontalAlignment('center');
+  headerRange.setVerticalAlignment('middle');
+  sheet.setRowHeight(1, 38);
+  sheet.setFrozenRows(1);
+
+  // قوائم منسدلة
+  const daysRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'], true)
+    .setAllowInvalid(true).build();
+  sheet.getRange('C2:C2000').setDataValidation(daysRule);
+
+  const typesRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(['صلوات طقسية', 'تربية كنسية', 'إجتماع'], true)
+    .setAllowInvalid(true).build();
+  sheet.getRange('D2:D2000').setDataValidation(typesRule);
+
+  const placesRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList([
+      'كنيسة الأنبا أنطونيوس',
+      'كنيسة الأنبا إبرآم (قاعة المناسبات)',
+      'كنيسة السيدة العذراء',
+      'كنيسة الملاك ميخائيل',
+      'مبني الخدمات – الدور الرابع والخامس',
+      'مبني الخدمات – الدور السابع والثامن',
+      'مبني الخدمات – الدور التاسع'
+    ], true)
+    .setAllowInvalid(true).build();
+  sheet.getRange('G2:G2000').setDataValidation(placesRule);
+
+  sheet.getRange('A2:A2000').setHorizontalAlignment('center');
+  sheet.getRange('B2:D2000').setHorizontalAlignment('center');
+  sheet.getRange('H2:I2000').setHorizontalAlignment('center');
+
+  // رفع المواعيد الـ 40 لو كان التبويب فارغاً
+  if (sheet.getLastRow() < 2) {
+    seedFixedSchedule(sheet);
+  }
+
+  for (let c = 1; c <= headers.length; c++) sheet.autoResizeColumn(c);
+}
+
+function seedFixedSchedule(sheet) {
+  sheet = sheet || getOrCreateFixedScheduleSheet();
+  const scheduleData = [
+    ["#10","الأيام السنوية","الأحد","صلوات طقسية","القداس الإلهي الأول","","كنيسة الأنبا أنطونيوس","6:00 ص","8:30 ص","","",""],
+    ["#11","الأيام السنوية","الأحد","صلوات طقسية","القداس الإلهي الثاني","","كنيسة الأنبا أنطونيوس","8:00 ص","10:30 ص","","",""],
+    ["#12","الأيام السنوية","الأحد","إجتماع","إجتماع الكشافة","كشافة ثانوي","كنيسة الأنبا إبرآم (قاعة المناسبات)","6:30 م","9:30 م","أ/ مينا كمال","01208008341",""],
+    ["#13","الأيام السنوية","الأحد","إجتماع","إجتماع الكشافة","كشافة جامعة وخريجين","مبني الخدمات – الدور التاسع","6:30 م","9:30 م","أ/ مينا حماده","01278017062",""],
+    ["#14","الأيام السنوية","الإثنين","صلوات طقسية","القداس الإلهي","","كنيسة الأنبا إبرآم (قاعة المناسبات)","6:00 ص","8:00 ص","","",""],
+    ["#15","الأيام السنوية","الإثنين","إجتماع","إجتماع خدام وخادمات المرضى","","كنيسة السيدة العذراء","6:30 م","8:30 م","أ/ أمير منير + م/ إيمان حنا","",""],
+    ["#16","الأيام السنوية","الإثنين","إجتماع","إجتماع الصلاة ودرس الكتاب المقدس","","كنيسة الأنبا أنطونيوس","7:00 م","9:00 م","القمص/ اغناطيوس إيليا","",""],
+    ["#17","الأيام السنوية","الثلاثاء","صلوات طقسية","القداس الإلهي","","كنيسة الأنبا إبرآم (قاعة المناسبات)","6:00 ص","8:00 ص","","",""],
+    ["#18","الأيام السنوية","الثلاثاء","تربية كنسية","إجتماع إعداد خدام (سنة أولى + سنة ثانية)","إعداد خدام","كنيسة الأنبا أنطونيوس","6:30 م","8:30 م","أ/ عادل إسحق","01001220974",""],
+    ["#19","الأيام السنوية","الأربعاء","صلوات طقسية","القداس الإلهي","","كنيسة الأنبا أنطونيوس","7:00 ص","9:00 ص","","",""],
+    ["#20","الأيام السنوية","الأربعاء","إجتماع","كورال – إجتماع الشباب الجامعي","","كنيسة الأنبا أنطونيوس","6:30 م","8:30 م","أ/ مينا فايز","01009390268",""],
+    ["#21","الأيام السنوية","الأربعاء","إجتماع","إجتماع إعداد خدام (كبار)","إعداد خدام كبار","كنيسة السيدة العذراء","7:00 م","9:00 م","القس/ اقلاديوس عريان","",""],
+    ["#22","الأيام السنوية","الخميس","صلوات طقسية","القداس الإلهي","","كنيسة الأنبا أنطونيوس","6:00 ص","8:30 ص","","",""],
+    ["#23","الأيام السنوية","الخميس","صلوات طقسية","رفع بخور عشية","","كنيسة الأنبا أنطونيوس","6:00 م","6:30 م","","",""],
+    ["#28","الأيام السنوية","الخميس","إجتماع","حصة ألحان شمامسة (كبار)","شمامسة","كنيسة السيدة العذراء","6:00 م","8:00 م","المعلم/ ثابت نجيب","01277879798",""],
+    ["#24","الأيام السنوية","الخميس","تربية كنسية","إجتماع إعداد خدام (سنة أولى)","إعداد خدام","كنيسة الأنبا أنطونيوس","6:30 م","8:30 م","أ/ إبراهيم نعيم","01271125213",""],
+    ["#25","الأيام السنوية","الخميس","تربية كنسية","إجتماع إعداد خدام (سنة ثانية)","إعداد خدام","كنيسة الملاك ميخائيل","6:30 م","8:30 م","أ/ رفيق لويس","01272023537",""],
+    ["#26","الأيام السنوية","الخميس","تربية كنسية","إجتماع الخريجين","","كنيسة الأنبا إبرآم (قاعة المناسبات)","7:00 م","9:00 م","أ/ أنسي نعمان","01279987972",""],
+    ["#27","الأيام السنوية","الخميس","إجتماع","إجتماع درس الكتاب المقدس العام","","كنيسة الأنبا أنطونيوس","7:00 م","8:30 م","القس/ ميخائيل إبراهيم","",""],
+    ["#29","الأيام السنوية","الجمعة","صلوات طقسية","القداس الإلهي الأول","","كنيسة الأنبا أنطونيوس","6:30 ص","8:30 ص","","",""],
+    ["#30","الأيام السنوية","الجمعة","صلوات طقسية","القداس الإلهي الثاني","","كنيسة الملاك ميخائيل","7:00 ص","9:00 ص","","",""],
+    ["#31","الأيام السنوية","الجمعة","صلوات طقسية","القداس الإلهي الثالث","","كنيسة الأنبا أنطونيوس","8:30 ص","10:30 ص","","",""],
+    ["#32","الأيام السنوية","الجمعة","تربية كنسية","قطاع حضانة","حضانة","كنيسة الأنبا أنطونيوس","9:00 ص","10:00 ص","تريزا منير","01202868884",""],
+    ["#33","الأيام السنوية","الجمعة","تربية كنسية","قطاع أولى وثانية إبتدائي","أولى وثانية إبتدائي","كنيسة الأنبا أنطونيوس","10:00 ص","11:00 ص","م/ شيري فوزي","01273512065",""],
+    ["#34","الأيام السنوية","الجمعة","تربية كنسية","قطاع ثالثة ورابعة إبتدائي","ثالثة ورابعة إبتدائي","كنيسة الأنبا أنطونيوس","10:00 ص","11:00 ص","م/ إبتسام يسري","01226346505",""],
+    ["#35","الأيام السنوية","الجمعة","تربية كنسية","قطاع خامسة وسادسة إبتدائي","خامسة وسادسة إبتدائي","كنيسة الأنبا أنطونيوس","11:00 ص","1:00 م","م/ إبتسام يسري","01226346505",""],
+    ["#36","الأيام السنوية","الجمعة","تربية كنسية","قطاع إعدادي بنين","إعدادي بنين","كنيسة الملاك ميخائيل","11:00 ص","1:00 م","أ/ عماد عادل","01202344225",""],
+    ["#37","الأيام السنوية","الجمعة","تربية كنسية","قطاع إعدادي بنات","إعدادي بنات","كنيسة الأنبا إبرآم (قاعة المناسبات)","11:00 ص","1:00 م","م/ داليا فؤاد","01284674689",""],
+    ["#38","الأيام السنوية","الجمعة","إجتماع","إجتماع الكشافة","كشافة إعدادي","مبني الخدمات – الدور الرابع والخامس","2:30 م","5:00 م","أ/ چورچ وجيه","01274177176",""],
+    ["#39","الأيام السنوية","الجمعة","تربية كنسية","إجتماع الشباب الجامعي","","كنيسة الأنبا أنطونيوس","7:00 م","9:00 م","أ/ چورچ عادل","01000879642",""],
+    ["#40","الأيام السنوية","الجمعة","تربية كنسية","إجتماع الخريجين","","كنيسة الأنبا إبرآم (قاعة المناسبات)","7:00 م","9:00 م","أ/ أنسي نعمان","01279987972",""],
+    ["#1","الأيام السنوية","السبت","صلوات طقسية","القداس الإلهي الأول","","كنيسة الأنبا أنطونيوس","6:00 ص","8:00 ص","","",""],
+    ["#2","الأيام السنوية","السبت","صلوات طقسية","القداس الإلهي الثاني (ثانوي)","","كنيسة الأنبا أنطونيوس","8:30 ص","10:30 ص","","",""],
+    ["#3","الأيام السنوية","السبت","تربية كنسية","إجتماع ثانوي بنين","ثانوي بنين","كنيسة الأنبا إبرآم (قاعة المناسبات)","11:30 ص","1:30 م","أ/ مينا سمير","01273726770",""],
+    ["#4","الأيام السنوية","السبت","تربية كنسية","إجتماع ثانوي بنات","ثانوي بنات","كنيسة الأنبا أنطونيوس","11:30 ص","1:30 م","م/ مريم برتي","01005652802",""],
+    ["#5","الأيام السنوية","السبت","صلوات طقسية","رفع بخور عشية","","كنيسة الأنبا أنطونيوس","6:00 م","6:30 م","","",""],
+    ["#6","الأيام السنوية","السبت","تربية كنسية","مدرسة الكتاب المقدس – إبتدائي كبير","رابعة وخامسة وسادسة إبتدائي","مبني الخدمات – الدور الرابع والخامس","6:30 م","8:00 م","م/ إبتسام يسري","01226346505",""],
+    ["#7","الأيام السنوية","السبت","إجتماع","إجتماع الأسرة العام","","كنيسة الأنبا أنطونيوس","6:30 م","8:30 م","القمص/ هارون رزق","","",""],
+    ["#8","الأيام السنوية","السبت","إجتماع","إجتماع درس الكتاب المقدس","إعدادي بنين + بنات","كنيسة السيدة العذراء","6:30 م","7:30 م","القس/ اقلاديوس عريان","","",""],
+    ["#9","الأيام السنوية","السبت","صلوات طقسية","تسبحة نصف الليل","","كنيسة السيدة العذراء","7:30 م","9:00 م","المعلم/ ثابت نجيب","01277879798",""]
+  ];
+
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 12).clearContent();
+  }
+  sheet.getRange(2, 1, scheduleData.length, 12).setValues(scheduleData);
+}
+
+// =========================================================================
+// 3) تبويب «المواعيد» (الحجوزات والخدمات الاستثنائية)
+// =========================================================================
+function getOrCreateBookingsSheet(ss) {
+  ss = ss || SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(TAB_BOOKINGS);
+  if (!sheet) {
+    sheet = ss.insertSheet(TAB_BOOKINGS);
+  }
+  initBookingsSheet(sheet);
   return sheet;
 }
 
@@ -58,7 +295,6 @@ function initBookingsSheet(sheet) {
   ];
 
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-
   const headerRange = sheet.getRange(1, 1, 1, headers.length);
   headerRange.setBackground('#1e3a8a'); // كحلي ملكي
   headerRange.setFontColor('#ffffff');
@@ -93,66 +329,7 @@ function initBookingsSheet(sheet) {
 }
 
 // =========================================================================
-// 2) إدارة تبويب «المواعيد الثابتة» (القداسات والاجتماعات ومدارس الأحد)
-// =========================================================================
-function getOrCreateFixedScheduleSheet() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(SCHEDULE_SHEET_NAME);
-  if (!sheet) {
-    sheet = ss.insertSheet(SCHEDULE_SHEET_NAME);
-    initFixedScheduleSheet(sheet);
-  }
-  return sheet;
-}
-
-function initFixedScheduleSheet(sheet) {
-  try { sheet.setRightToLeft(true); } catch (e) {}
-
-  const headers = [
-    'م',                   // 1
-    'الموسم',              // 2
-    'اليوم',               // 3
-    'النوع',               // 4
-    'اسم الخدمة / النشاط',   // 5
-    'المرحلة / الفئة',      // 6
-    'المكان',              // 7
-    'من',                 // 8
-    'إلى',                // 9
-    'المسؤول / الخادم',     // 10
-    'رقم الموبايل',         // 11
-    'ملاحظات'             // 12
-  ];
-
-  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-
-  const headerRange = sheet.getRange(1, 1, 1, headers.length);
-  headerRange.setBackground('#7f1d1d'); // عنابي كنسي وقور
-  headerRange.setFontColor('#ffffff');
-  headerRange.setFontWeight('bold');
-  headerRange.setHorizontalAlignment('center');
-  headerRange.setVerticalAlignment('middle');
-  sheet.setRowHeight(1, 38);
-  sheet.setFrozenRows(1);
-
-  const daysRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'], true)
-    .setAllowInvalid(true).build();
-  sheet.getRange('C2:C2000').setDataValidation(daysRule);
-
-  const typesRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['صلوات طقسية', 'تربية كنسية', 'إجتماع'], true)
-    .setAllowInvalid(true).build();
-  sheet.getRange('D2:D2000').setDataValidation(typesRule);
-
-  sheet.getRange('A2:A2000').setHorizontalAlignment('center');
-  sheet.getRange('B2:D2000').setHorizontalAlignment('center');
-  sheet.getRange('H2:I2000').setHorizontalAlignment('center');
-
-  for (let c = 1; c <= headers.length; c++) sheet.autoResizeColumn(c);
-}
-
-// =========================================================================
-// 3) معالجة طلبات POST الواردة من الموقع
+// 4) معالجة طلبات POST الواردة من الموقع
 // =========================================================================
 function doPost(e) {
   try {
@@ -162,6 +339,12 @@ function doPost(e) {
       try { data = JSON.parse(raw); } catch (err) { data = { error: 'invalid json' }; }
     }
     const action = data.action || '';
+
+    // تهيئة شاملة
+    if (action === 'initAllSheets') {
+      initAllSheets();
+      return replyJson({ ok: true, message: 'All sheets initialized successfully' });
+    }
 
     // ---------- طلبات الحجز (المواعيد) ----------
     if (action === 'createBooking' || action === 'add') {
@@ -206,7 +389,7 @@ function doPost(e) {
       return replyJson({ ok: true, action: 'bulkPush', count: list.length });
     }
 
-    // ---------- المواعيد الثابتة (القداسات والاجتماعات) ----------
+    // ---------- المواعيد الثابتة ----------
     if (action === 'pushAllSchedule') {
       const sheet = getOrCreateFixedScheduleSheet();
       const list = data.schedule || [];
@@ -232,6 +415,20 @@ function doPost(e) {
       return replyJson({ ok: res, action: 'schedule_deleted', id: data.id });
     }
 
+    // ---------- المستخدمين ----------
+    if (action === 'pushAllUsers') {
+      const sheet = getOrCreateUsersSheet();
+      const list = data.users || [];
+      if (list.length) {
+        if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).clearContent();
+        const rows = list.map(u => [
+          u.username, u.password, u.display_name, String(u.level || 2), String(u.active ? 1 : 0), u.phone || '', u.notes || ''
+        ]);
+        sheet.getRange(2, 1, rows.length, 7).setValues(rows);
+      }
+      return replyJson({ ok: true, action: 'pushAllUsers', count: list.length });
+    }
+
     return replyJson({ ok: false, error: 'Unknown action: ' + action });
   } catch (err) {
     return replyJson({ ok: false, error: err.toString() });
@@ -239,20 +436,26 @@ function doPost(e) {
 }
 
 // =========================================================================
-// 4) معالجة طلبات GET (لجلب الحجوزات والمواعيد الثابتة)
+// 5) معالجة طلبات GET (لجلب المستخدمين والمواعيد والحجوزات)
 // =========================================================================
 function doGet(e) {
   try {
-    const bookingsSheet = getOrCreateBookingsSheet();
+    const usersSheet = getOrCreateUsersSheet();
     const scheduleSheet = getOrCreateFixedScheduleSheet();
-    const bookings = getAllBookings(bookingsSheet);
+    const bookingsSheet = getOrCreateBookingsSheet();
+
+    const users = getAllUsers(usersSheet);
     const schedule = getAllFixedSchedule(scheduleSheet);
+    const bookings = getAllBookings(bookingsSheet);
+
     return replyJson({
       ok: true,
-      bookings: bookings,
+      users: users,
       schedule: schedule,
-      totalBookings: bookings.length,
-      totalSchedule: schedule.length
+      bookings: bookings,
+      totalUsers: users.length,
+      totalSchedule: schedule.length,
+      totalBookings: bookings.length
     });
   } catch (err) {
     return replyJson({ ok: false, error: err.toString() });
@@ -262,6 +465,31 @@ function doGet(e) {
 function replyJson(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+// =========================================================================
+// دوال مساعدة لتبويب «المستخدمين»
+// =========================================================================
+function getAllUsers(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  const data = sheet.getRange(2, 1, lastRow - 1, 7).getValues();
+  const list = [];
+  for (let i = 0; i < data.length; i++) {
+    const r = data[i];
+    const username = String(r[0] || '').trim();
+    if (!username) continue;
+    list.push({
+      username: username,
+      password: String(r[1] || ''),
+      display_name: String(r[2] || username).trim(),
+      level: Number(r[3]) || 2,
+      active: String(r[4]) !== '0',
+      phone: String(r[5] || ''),
+      notes: String(r[6] || '')
+    });
+  }
+  return list;
 }
 
 // =========================================================================

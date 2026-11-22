@@ -6,6 +6,7 @@ import * as db from './src/db.js';
 import * as sheetAuth from './src/sheetAuth.js';
 import * as sheetBookings from './src/sheetBookings.js';
 import * as sheetSchedule from './src/sheetSchedule.js';
+import * as sheetCalendar from './src/sheetCalendar.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, 'public');
@@ -142,6 +143,11 @@ async function api(req, res, path, q) {
     const rows = db.listApprovedUpcoming({ from, placeId: q.get('placeId') || null });
     if (!canSeePhones(req)) for (const r of rows) { r.has_contact = !!r.requester_phone; r.requester_phone = ''; }
     return json(res, 200, rows);
+  }
+
+  if (path === '/api/calendar' && method === 'GET') {
+    const cal = await sheetCalendar.getChurchCalendar();
+    return json(res, 200, cal);
   }
 
   // ---- حسابات مستخدمي الحجز (عام) ----

@@ -1,8 +1,11 @@
 {
-  "googleSheetId": "1Gq5huRGfF1qeB8cDSUEDlgb5LsKiLhB9WUv8X9_-Ujo",
-  "googleSheetTab": "Sheet1",
-  "googleBookingsSheetId": "1kQaBOf6t9-IUTSi5gjRiiDzKOS1V-hnTe_CH9ETi33I",
-  "googleBookingsSheetUrl": "https://docs.google.com/spreadsheets/d/1kQaBOf6t9-IUTSi5gjRiiDzKOS1V-hnTe_CH9ETi33I/edit?usp=sharing",
+  "googleSheetId": "1bdMNP7D4u8GGb2s3YqBE7mfNaERrOUZL",
+  "googleSheetUrl": "https://docs.google.com/spreadsheets/d/1bdMNP7D4u8GGb2s3YqBE7mfNaERrOUZL/edit?usp=sharing",
+  "googleUsersTab": "المستخدمين",
+  "googleBookingsSheetId": "1bdMNP7D4u8GGb2s3YqBE7mfNaERrOUZL",
+  "googleBookingsSheetUrl": "https://docs.google.com/spreadsheets/d/1bdMNP7D4u8GGb2s3YqBE7mfNaERrOUZL/edit?usp=sharing",
   "googleBookingsTab": "المواعيد",
-  "googleBookingsWebhookUrl": "https://script.google.com/macros/s/AKfycbz1ftRYH-dEtQszJw8m2KIexkAKdGzokCtnecCj-CleVHavNfsT-q3iRFQY8bBv37Neug/exec"
+  "googleScheduleTab": "Schedule",
+  "googleBookingsWebhookUrl": "https://script.google.com/macros/s/AKfycbx8tldI5tiwSJBw3c6A9flXv63GbgpbosIlkHQMmzoYl_JWRMtW3wki58bpfKl73iUELQ/exec",
+  "localExcelPath": "كنيسة_الأنبا_أنطونيوس_الشامل.xlsx"
 }

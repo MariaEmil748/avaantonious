@@ -97,6 +97,31 @@ export function arToStatus(ar) {
   return 'pending'; // معلق أو فاضي (بدون قرار / no action)
 }
 
+export function parseSheetDate(rawDate) {
+  if (!rawDate) return new Date().toLocaleDateString('en-CA');
+  const s = String(rawDate).trim();
+  // e.g. YYYY-MM-DD
+  const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) {
+    return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+  }
+  // e.g. DD/MM/YYYY or MM/DD/YYYY
+  const m2 = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
+  if (m2) {
+    return `${m2[3]}-${String(m2[2]).padStart(2, '0')}-${String(m2[1]).padStart(2, '0')}`;
+  }
+  // ISO date with timezone like 2026-11-04T22:00:00.000Z
+  try {
+    const dt = new Date(s);
+    if (!isNaN(dt.getTime())) {
+      // Shift by +4 hours to safely align UTC midnight with Egypt timezone (UTC+2)
+      const shifted = new Date(dt.getTime() + 4 * 60 * 60 * 1000);
+      return shifted.toISOString().slice(0, 10);
+    }
+  } catch {}
+  return s.slice(0, 10);
+}
+
 export function parseTimeTo24(str) {
   if (!str) return '18:00';
   const s = String(str).trim();
@@ -218,18 +243,48 @@ export async function pushAllBookings(bookingsList) {
 export async function fetchSheetBookings() {
   const { webhookUrl, sheetId, tab } = loadBookingsConfig();
 
-  // طريقة 1: عن طريق الـ Webhook (doGet)
+  // طريقة 1: القراءة المباشرة كـ CSV بتجربة التبويبات المرشحة
+  if (sheetId) {
+    const candidateTabs = [...new Set([tab, 'المواعيد', 'Bookings', 'حجوزات', 'الحجوزات'])].filter(Boolean);
+    for (const t of candidateTabs) {
+      try {
+        const encodedTab = encodeURIComponent(t);
+        const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodedTab}&t=${Date.now()}`;
+        const res = await fetch(url, {
+          redirect: 'follow',
+          headers: { 'User-Agent': 'church-site-bookings-sync' },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (res.ok) {
+          const text = await res.text();
+          if (!text.includes('accounts.google.com') && !/^\s*<!doctype/i.test(text)) {
+            const rows = parseCsv(text);
+            if (rows.length >= 2) {
+              const bookings = parseBookingsFromCsv(rows);
+              if (bookings.length > 0) {
+                return { ok: true, source: 'csv', tab: t, bookings };
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // تجربة التبويب التالي
+      }
+    }
+  }
+
+  // طريقة 2: عن طريق الـ Webhook (doGet)
   if (webhookUrl) {
     try {
       const res = await fetch(webhookUrl, {
         method: 'GET',
         headers: { 'User-Agent': 'church-site-bookings-sync' },
         redirect: 'follow',
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(12000),
       });
       if (res.ok) {
         const data = await res.json();
-        if (data && Array.isArray(data.bookings)) {
+        if (data && Array.isArray(data.bookings) && data.bookings.length > 0) {
           return { ok: true, source: 'webhook', bookings: data.bookings };
         }
       }
@@ -238,29 +293,28 @@ export async function fetchSheetBookings() {
     }
   }
 
-  // طريقة 2: القراءة كـ CSV مباشر لو الجدول مشارك للعامة
-  if (sheetId) {
+  // طريقة 3: القراءة من ملف الإكسيل الشامل المحلي كنيسة_الأنبا_أنطونيوس_الشامل.xlsx
+  const localFile = join(__dirname, '..', 'كنيسة_الأنبا_أنطونيوس_الشامل.xlsx');
+  if (existsSync(localFile)) {
     try {
-      const encodedTab = encodeURIComponent(tab || 'المواعيد');
-      const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodedTab}`;
-      const res = await fetch(url, {
-        redirect: 'follow',
-        headers: { 'User-Agent': 'church-site-bookings-sync' },
-        signal: AbortSignal.timeout(15000),
-      });
-      if (res.ok) {
-        const text = await res.text();
-        if (!text.includes('accounts.google.com') && !/^\s*<!doctype/i.test(text)) {
+      const mod = await import('xlsx');
+      const XLSX = mod.default || mod;
+      const buf = readFileSync(localFile);
+      const wb = XLSX.read(buf, { type: 'buffer' });
+      for (const t of ['المواعيد', 'Bookings', 'حجوزات']) {
+        const ws = wb.Sheets[t];
+        if (ws) {
+          const text = XLSX.utils.sheet_to_csv(ws);
           const rows = parseCsv(text);
           if (rows.length >= 2) {
             const bookings = parseBookingsFromCsv(rows);
-            return { ok: true, source: 'csv', bookings };
+            if (bookings.length > 0) {
+              return { ok: true, source: 'local_xlsx', tab: t, bookings };
+            }
           }
         }
       }
-    } catch (e) {
-      console.warn('[Google Sheets] فشل القراءة المباشرة من CSV:', e.message);
-    }
+    } catch (e) {}
   }
 
   return { ok: false, error: 'تعذر جلب المواعيد من Google Sheets. تأكد من إعداد Webhook أو مشاركة الجدول.' };
@@ -300,23 +354,61 @@ function parseCsv(text) {
 }
 
 function parseBookingsFromCsv(rows) {
+  if (!rows || rows.length < 2) return [];
   const headers = rows[0].map(h => String(h || '').trim());
-  const idCol = headers.findIndex(h => h.includes('طلب') || h.toLowerCase().includes('id'));
-  const statusCol = headers.findIndex(h => h.includes('حالة') || h.toLowerCase().includes('status'));
-  const decidedAtCol = headers.findIndex(h => h.includes('قرار') || h.toLowerCase().includes('decided_at'));
-  const decidedByCol = headers.findIndex(h => h.includes('مسؤول') || h.toLowerCase().includes('decided_by'));
+  const findCol = (...keywords) => headers.findIndex(h => {
+    const norm = h.replace(/[\/\-_]/g, ' ').trim().toLowerCase();
+    return keywords.some(k => {
+      const kn = k.toLowerCase().trim();
+      if (norm === kn) return true;
+      if (kn === 'من') return norm === 'من' || norm.startsWith('من ') || norm.endsWith(' من');
+      if (kn === 'إلى' || kn === 'الي') return norm === 'إلى' || norm === 'الي' || norm.startsWith('إلى ') || norm.endsWith(' إلى') || norm.startsWith('الي ') || norm.endsWith(' الي');
+      return norm.includes(kn);
+    });
+  });
 
-  if (idCol < 0 || statusCol < 0) return [];
+  const idCol = findCol('رقم الطلب', 'طلب', 'id');
+  const serviceCol = findCol('اسم الخدمة', 'خدمة', 'service');
+  const placeCol = findCol('المكان', 'place');
+  const dateCol = findCol('التاريخ', 'date');
+  const dayCol = findCol('اليوم', 'day');
+  const startCol = findCol('من', 'start');
+  const endCol = findCol('إلى', 'الي', 'end');
+  const repeatCol = findCol('التكرار', 'repeat');
+  const repeatEndCol = findCol('نهاية التكرار', 'repeat_end');
+  const requesterCol = findCol('اسم مقدم الطلب', 'مقدم', 'requester_name');
+  const phoneCol = findCol('موبايل', 'هاتف', 'phone');
+  const usernameCol = findCol('اسم المستخدم', 'username');
+  const notesCol = findCol('ملاحظات', 'notes');
+  const statusCol = findCol('حالة', 'status');
+  const createdAtCol = findCol('تاريخ الطلب', 'created_at');
+  const decidedAtCol = findCol('تاريخ القرار', 'decided_at');
+  const decidedByCol = findCol('مسؤول', 'decided_by');
+
+  if (idCol < 0) return [];
 
   const out = [];
   for (const r of rows.slice(1)) {
     const rawId = String(r[idCol] || '').replace('#', '').trim();
     const id = Number(rawId);
     if (!id) continue;
-    const statusAr = String(r[statusCol] || '').trim();
+
     out.push({
       id,
-      status: statusAr,
+      service_name: serviceCol >= 0 ? String(r[serviceCol] || '').trim() : '',
+      place_name: placeCol >= 0 ? String(r[placeCol] || '').trim() : '',
+      date: dateCol >= 0 ? parseSheetDate(r[dateCol]) : '',
+      day: dayCol >= 0 ? String(r[dayCol] || '').trim() : '',
+      start: startCol >= 0 ? String(r[startCol] || '').trim() : '',
+      end: endCol >= 0 ? String(r[endCol] || '').trim() : '',
+      repeat: repeatCol >= 0 ? String(r[repeatCol] || '').trim() : '',
+      repeat_end: repeatEndCol >= 0 ? String(r[repeatEndCol] || '').trim() : '',
+      requester_name: requesterCol >= 0 ? String(r[requesterCol] || '').trim() : '',
+      requester_phone: phoneCol >= 0 ? String(r[phoneCol] || '').trim() : '',
+      requester_username: usernameCol >= 0 ? String(r[usernameCol] || '').trim() : '',
+      notes: notesCol >= 0 ? String(r[notesCol] || '').trim() : '',
+      status: statusCol >= 0 ? String(r[statusCol] || '').trim() : 'معلق',
+      created_at: createdAtCol >= 0 ? String(r[createdAtCol] || '').trim() : '',
       decided_at: decidedAtCol >= 0 ? String(r[decidedAtCol] || '').trim() : '',
       decided_by: decidedByCol >= 0 ? String(r[decidedByCol] || '').trim() : '',
     });
@@ -374,21 +466,49 @@ export async function syncFromSheet(db) {
       continue;
     }
 
-    // ج) فحص الحالة: مقبول / مرفوض / معلق (بدون قرار / no action)
+    // ج) تحديث الحالة والبيانات القادمة من الشيت
     const newStatus = arToStatus(item.status);
-    if (newStatus !== current.status) {
-      if (newStatus === 'pending') {
-        db.syncBookingStatusFromSheet(current.id, 'pending', null, '');
-      } else {
-        const decidedBy = item.decided_by || (newStatus === 'approved' ? 'Google Sheet' : '');
-        const decidedAt = item.decided_at || new Date().toISOString().replace('T', ' ').slice(0, 19);
-        db.syncBookingStatusFromSheet(current.id, newStatus, decidedAt, decidedBy);
-      }
+    const itemDate = parseSheetDate(item.date) || current.date;
+    const itemStart = item.start ? parseTimeTo24(item.start) : current.start;
+    const itemEnd = item.end ? parseTimeTo24(item.end) : current.end;
+    const itemPlaceId = item.place_name ? getPlaceId(item.place_name) : current.place_id;
+    const itemServiceName = item.service_name || current.service_name;
+    const itemRepeat = String(item.repeat || '').includes('أسبوع') ? 'weekly' : (item.repeat === 'none' ? 'none' : current.repeat);
+
+    const hasStatusDiff = newStatus !== current.status;
+    const hasDataDiff = (itemDate !== current.date)
+      || (itemStart !== current.start)
+      || (itemEnd !== current.end)
+      || (itemPlaceId !== current.place_id)
+      || (itemServiceName !== current.service_name)
+      || (itemRepeat !== current.repeat);
+
+    if (hasStatusDiff || hasDataDiff) {
+      const decidedBy = newStatus === 'pending' ? '' : (item.decided_by || current.decided_by || (newStatus === 'approved' ? 'Google Sheet' : ''));
+      const decidedAt = newStatus === 'pending' ? null : (item.decided_at || current.decided_at || new Date().toISOString().replace('T', ' ').slice(0, 19));
+
+      db.updateBookingFromSheet({
+        id: current.id,
+        place_id: itemPlaceId,
+        date: itemDate,
+        start: itemStart,
+        end: itemEnd,
+        service_name: itemServiceName,
+        requester_name: item.requester_name || current.requester_name,
+        requester_phone: item.requester_phone || current.requester_phone,
+        notes: item.notes !== undefined ? item.notes : current.notes,
+        status: newStatus,
+        decided_at: decidedAt,
+        decided_by: decidedBy,
+        repeat: itemRepeat,
+        repeat_end: item.repeat_end || current.repeat_end || null,
+      });
+
       updatedCount++;
       changes.push({
         id: current.id,
-        service_name: current.service_name,
-        action: 'status_changed',
+        service_name: itemServiceName,
+        action: hasStatusDiff ? 'status_changed' : 'details_updated',
         oldStatus: current.status,
         newStatus,
       });
@@ -403,7 +523,7 @@ export async function syncFromSheet(db) {
 
     const status = arToStatus(item.status);
     const place_id = getPlaceId(item.place_name);
-    const date = item.date ? String(item.date).slice(0, 10) : new Date().toISOString().slice(0, 10);
+    const date = parseSheetDate(item.date) || new Date().toLocaleDateString('en-CA');
     const start = parseTimeTo24(item.start);
     const end = parseTimeTo24(item.end);
 
