@@ -152,6 +152,17 @@ function showServerWarn() {
 }
 
 // ---------- init ----------
+function updateTodayDate() {
+  const date = new Intl.DateTimeFormat('ar-EG', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'Africa/Cairo',
+  }).format(new Date());
+  $('#today-date').textContent = `التاريخ اليوم: ${date}`;
+}
+
 async function init() {
   if (location.protocol === 'file:') { showServerWarn(); return; }
   const { status, body } = await api('/api/meta');
@@ -1278,4 +1289,6 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+updateTodayDate();
+setInterval(updateTodayDate, 60_000);
 init();
