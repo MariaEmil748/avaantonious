@@ -5,6 +5,8 @@ import { dirname, join, normalize, extname, resolve } from 'node:path';
 import * as db from './src/db.js';
 import * as sheetAuth from './src/sheetAuth.js';
 import * as sheetBookings from './src/sheetBookings.js';
+import * as sheetSchedule from './src/sheetSchedule.js';
+import * as sheetCalendar from './src/sheetCalendar.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, 'public');
@@ -85,6 +87,9 @@ async function autoSyncWithSheet(minIntervalMs = 5000) {
       if (sheetBookings.isConfigured()) {
         await sheetBookings.syncFromSheet(db);
       }
+      try {
+        await sheetSchedule.syncFixedScheduleFromSheet(db);
+      } catch {}
     } catch (e) {
       // silent
     } finally {
@@ -138,6 +143,11 @@ async function api(req, res, path, q) {
     const rows = db.listApprovedUpcoming({ from, placeId: q.get('placeId') || null });
     if (!canSeePhones(req)) for (const r of rows) { r.has_contact = !!r.requester_phone; r.requester_phone = ''; }
     return json(res, 200, rows);
+  }
+
+  if (path === '/api/calendar' && method === 'GET') {
+    const cal = await sheetCalendar.getChurchCalendar();
+    return json(res, 200, cal);
   }
 
   // ---- حسابات مستخدمي الحجز (عام) ----
@@ -354,11 +364,25 @@ async function api(req, res, path, q) {
     }
   }
 
+  if (path === '/api/admin/schedule/push-all-to-sheet' && method === 'POST') {
+    if (need('schedule.edit')) return;
+    const resPush = await sheetSchedule.pushAllSchedule(db);
+    return json(res, 200, resPush);
+  }
+
+  if (path === '/api/admin/schedule/sync-sheet' && method === 'POST') {
+    if (need('schedule.edit')) return;
+    const resSync = await sheetSchedule.syncFixedScheduleFromSheet(db);
+    return json(res, 200, resSync);
+  }
+
   if (path === '/api/admin/schedule' && method === 'POST') {
     if (need('schedule.edit')) return;
     const e = await readBody(req);
     const err = validateSchedule(e); if (err) return json(res, 400, { error: err });
-    return json(res, 201, { entry: db.addSchedule(normalizeSchedule(e)) });
+    const created = db.addSchedule(normalizeSchedule(e));
+    sheetSchedule.onScheduleCreated(created).catch(e => console.error('[Schedule Sync Error]', e.message));
+    return json(res, 201, { entry: created });
   }
   if ((m = path.match(/^\/api\/admin\/schedule\/(\d+)$/))) {
     if (need('schedule.edit')) return;
@@ -366,9 +390,15 @@ async function api(req, res, path, q) {
     if (method === 'PUT') {
       const e = await readBody(req);
       const err = validateSchedule(e); if (err) return json(res, 400, { error: err });
-      return json(res, 200, { entry: db.updateSchedule(id, normalizeSchedule(e)) });
+      const updated = db.updateSchedule(id, normalizeSchedule(e));
+      sheetSchedule.onScheduleUpdated(updated).catch(e => console.error('[Schedule Sync Error]', e.message));
+      return json(res, 200, { entry: updated });
     }
-    if (method === 'DELETE') { db.deleteSchedule(id); return json(res, 200, { ok: true }); }
+    if (method === 'DELETE') {
+      db.deleteSchedule(id);
+      sheetSchedule.onScheduleDeleted(id).catch(e => console.error('[Schedule Sync Error]', e.message));
+      return json(res, 200, { ok: true });
+    }
   }
 
   if (path === '/api/admin/places' && method === 'POST') {

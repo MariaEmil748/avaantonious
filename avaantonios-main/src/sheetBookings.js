@@ -243,28 +243,33 @@ export async function pushAllBookings(bookingsList) {
 export async function fetchSheetBookings() {
   const { webhookUrl, sheetId, tab } = loadBookingsConfig();
 
-  // طريقة 1: القراءة المباشرة كـ CSV (الأدق والأسرع لتجنب أي تحويل زمني في JSON)
+  // طريقة 1: القراءة المباشرة كـ CSV بتجربة التبويبات المرشحة
   if (sheetId) {
-    try {
-      const encodedTab = encodeURIComponent(tab || 'المواعيد');
-      const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodedTab}&t=${Date.now()}`;
-      const res = await fetch(url, {
-        redirect: 'follow',
-        headers: { 'User-Agent': 'church-site-bookings-sync' },
-        signal: AbortSignal.timeout(12000),
-      });
-      if (res.ok) {
-        const text = await res.text();
-        if (!text.includes('accounts.google.com') && !/^\s*<!doctype/i.test(text)) {
-          const rows = parseCsv(text);
-          if (rows.length >= 2) {
-            const bookings = parseBookingsFromCsv(rows);
-            return { ok: true, source: 'csv', bookings };
+    const candidateTabs = [...new Set([tab, 'المواعيد', 'Bookings', 'حجوزات', 'الحجوزات'])].filter(Boolean);
+    for (const t of candidateTabs) {
+      try {
+        const encodedTab = encodeURIComponent(t);
+        const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodedTab}&t=${Date.now()}`;
+        const res = await fetch(url, {
+          redirect: 'follow',
+          headers: { 'User-Agent': 'church-site-bookings-sync' },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (res.ok) {
+          const text = await res.text();
+          if (!text.includes('accounts.google.com') && !/^\s*<!doctype/i.test(text)) {
+            const rows = parseCsv(text);
+            if (rows.length >= 2) {
+              const bookings = parseBookingsFromCsv(rows);
+              if (bookings.length > 0) {
+                return { ok: true, source: 'csv', tab: t, bookings };
+              }
+            }
           }
         }
+      } catch (e) {
+        // تجربة التبويب التالي
       }
-    } catch (e) {
-      console.warn('[Google Sheets] فشل القراءة المباشرة من CSV:', e.message);
     }
   }
 
@@ -279,13 +284,37 @@ export async function fetchSheetBookings() {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data && Array.isArray(data.bookings)) {
+        if (data && Array.isArray(data.bookings) && data.bookings.length > 0) {
           return { ok: true, source: 'webhook', bookings: data.bookings };
         }
       }
     } catch (e) {
       console.warn('[Google Sheets] فشل القراءة من الـ webhook:', e.message);
     }
+  }
+
+  // طريقة 3: القراءة من ملف الإكسيل الشامل المحلي كنيسة_الأنبا_أنطونيوس_الشامل.xlsx
+  const localFile = join(__dirname, '..', 'كنيسة_الأنبا_أنطونيوس_الشامل.xlsx');
+  if (existsSync(localFile)) {
+    try {
+      const mod = await import('xlsx');
+      const XLSX = mod.default || mod;
+      const buf = readFileSync(localFile);
+      const wb = XLSX.read(buf, { type: 'buffer' });
+      for (const t of ['المواعيد', 'Bookings', 'حجوزات']) {
+        const ws = wb.Sheets[t];
+        if (ws) {
+          const text = XLSX.utils.sheet_to_csv(ws);
+          const rows = parseCsv(text);
+          if (rows.length >= 2) {
+            const bookings = parseBookingsFromCsv(rows);
+            if (bookings.length > 0) {
+              return { ok: true, source: 'local_xlsx', tab: t, bookings };
+            }
+          }
+        }
+      }
+    } catch (e) {}
   }
 
   return { ok: false, error: 'تعذر جلب المواعيد من Google Sheets. تأكد من إعداد Webhook أو مشاركة الجدول.' };

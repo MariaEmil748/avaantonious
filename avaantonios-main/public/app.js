@@ -222,6 +222,114 @@ function bindNav() {
     }
   };
   $('#btn-print').onclick = () => window.print();
+
+  $('#btn-church-calendar')?.addEventListener('click', async () => {
+    toast('جارٍ تحميل تقويم الكنيسة والأصوام...');
+    const { status, body } = await api('/api/calendar');
+    if (status !== 200 || !body || !body.ok) {
+      toast('تعذر تحميل التقويم', 'bad');
+      return;
+    }
+    showCalendarModal(body);
+  });
+}
+
+function showCalendarModal(cal) {
+  let activeYear = '2027';
+  let activeFilter = 'all';
+
+  function renderModalContent() {
+    const activeData = activeYear === '2027' ? cal.y2027 : cal.y2026;
+    const events = (activeData && activeData.events) || [];
+
+    const filtered = events.filter(e => {
+      if (activeFilter === 'all') return true;
+      if (activeFilter === 'feast') return e.category === 'عيد كنسي';
+      if (activeFilter === 'fast') return e.category === 'صوم';
+      if (activeFilter === 'booking') return e.category === 'حجز خدمة';
+      if (activeFilter === 'meeting') return e.category === 'اجتماع خدمة';
+      return true;
+    });
+
+    const categoryBadge = (cat) => {
+      if (cat === 'عيد كنسي') return '<span class="badge-type" style="background:#fff6e2;color:#9c7c14;border:1px solid #e8c766">✨ عيد كنسي</span>';
+      if (cat === 'صوم') return '<span class="badge-type" style="background:#f4ebff;color:#6929c4;border:1px solid #d4bbff">🕊️ صوم</span>';
+      if (cat === 'حجز خدمة') return '<span class="badge-type" style="background:#defbe6;color:#0e6027;border:1px solid #a7f0ba">📌 حجز معتمد</span>';
+      return '<span class="badge-type" style="background:#edf5ff;color:#0043ce;border:1px solid #d0e2ff">👥 اجتماع خدمة</span>';
+    };
+
+    const rowsHtml = filtered.map(e => `
+      <tr style="border-bottom:1px solid #eee">
+        <td style="padding:10px 8px;font-weight:700;white-space:nowrap;color:#5a1020">${esc(e.date)}</td>
+        <td style="padding:10px 8px;white-space:nowrap">${esc(e.dayOfWeek)}</td>
+        <td style="padding:10px 8px">${categoryBadge(e.category)}</td>
+        <td style="padding:10px 8px;font-weight:600">${esc(e.text)}</td>
+      </tr>
+    `).join('');
+
+    return `
+      <div style="direction:rtl;text-align:right">
+        <!-- القواعد والضوابط -->
+        <div style="background:#fff9eb;border:1px solid #e8c766;border-radius:10px;padding:12px;margin-bottom:16px;font-size:13.5px;color:#6b4d08">
+          <div style="font-weight:700;margin-bottom:6px">☦ ضوابط التقويم وأيام الأصوام والحجوزات للكنيسة:</div>
+          <ul style="margin:0;padding-right:20px;line-height:1.7">
+            ${(cal.rules || []).map(r => `<li>${esc(r)}</li>`).join('')}
+          </ul>
+        </div>
+
+        <!-- أزرار التبديل بين 2026 و 2027 -->
+        <div style="display:flex;gap:10px;margin-bottom:14px;border-bottom:2px solid #eee;padding-bottom:10px">
+          <button type="button" class="btn ${activeYear === '2027' ? 'gold' : 'ghost'} small" id="cal-tab-2027">
+            تقويم 2027 (يناير — أكتوبر) (${cal.y2027?.events?.length || 0})
+          </button>
+          <button type="button" class="btn ${activeYear === '2026' ? 'gold' : 'ghost'} small" id="cal-tab-2026">
+            تقويم 2026 (أكتوبر — ديسمبر) (${cal.y2026?.events?.length || 0})
+          </button>
+        </div>
+
+        <!-- فلترة التصنيف -->
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;font-size:13px">
+          <button type="button" class="btn ${activeFilter === 'all' ? 'primary' : 'ghost'} small" id="cf-all">الكل (${events.length})</button>
+          <button type="button" class="btn ${activeFilter === 'feast' ? 'primary' : 'ghost'} small" id="cf-feast">الأعياد الكنسية</button>
+          <button type="button" class="btn ${activeFilter === 'fast' ? 'primary' : 'ghost'} small" id="cf-fast">أيام الأصوام</button>
+          <button type="button" class="btn ${activeFilter === 'booking' ? 'primary' : 'ghost'} small" id="cf-booking">حجوزات الكنيسة</button>
+          <button type="button" class="btn ${activeFilter === 'meeting' ? 'primary' : 'ghost'} small" id="cf-meeting">اجتماع الخدمة العام</button>
+        </div>
+
+        <!-- جدول المناسبات -->
+        <div style="max-height:420px;overflow-y:auto;border:1px solid #eee;border-radius:8px">
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead style="background:#fafafa;position:sticky;top:0;border-bottom:2px solid #ddd">
+              <tr>
+                <th style="padding:10px 8px;text-align:right">التاريخ</th>
+                <th style="padding:10px 8px;text-align:right">اليوم</th>
+                <th style="padding:10px 8px;text-align:right">التصنيف</th>
+                <th style="padding:10px 8px;text-align:right">المناسبة / الحجز</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml || '<tr><td colspan="4" style="text-align:center;padding:20px;color:#888">لا توجد مناسبات مطابقة</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  function render() {
+    openModal('تقويم كنيسة الأنبا أنطونيوس (2026 — 2027) والأصوام', renderModalContent());
+
+    const t2027 = $('#cal-tab-2027'); if (t2027) t2027.onclick = () => { activeYear = '2027'; render(); };
+    const t2026 = $('#cal-tab-2026'); if (t2026) t2026.onclick = () => { activeYear = '2026'; render(); };
+
+    const cfa = $('#cf-all'); if (cfa) cfa.onclick = () => { activeFilter = 'all'; render(); };
+    const cfe = $('#cf-feast'); if (cfe) cfe.onclick = () => { activeFilter = 'feast'; render(); };
+    const cff = $('#cf-fast'); if (cff) cff.onclick = () => { activeFilter = 'fast'; render(); };
+    const cfb = $('#cf-booking'); if (cfb) cfb.onclick = () => { activeFilter = 'booking'; render(); };
+    const cfm = $('#cf-meeting'); if (cfm) cfm.onclick = () => { activeFilter = 'meeting'; render(); };
+  }
+
+  render();
 }
 
 // ---------- schedule view ----------

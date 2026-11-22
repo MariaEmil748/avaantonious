@@ -16,15 +16,15 @@ export function loadScheduleConfig() {
       file = {};
     }
   }
-  const sheetId = process.env.GOOGLE_BOOKINGS_SHEET_ID
+  const sheetId = process.env.GOOGLE_SCHEDULE_SHEET_ID
+    || file.googleScheduleSheetId
     || file.googleBookingsSheetId
-    || file.googleBookingsSheetUrl
-    || process.env.GOOGLE_SHEET_ID
     || file.googleSheetId
+    || file.googleBookingsSheetUrl
     || file.googleSheetUrl
     || '';
   const cleanId = extractSheetId(sheetId);
-  const tab = process.env.GOOGLE_SCHEDULE_TAB || file.googleScheduleTab || 'المواعيد الثابتة';
+  const tab = process.env.GOOGLE_SCHEDULE_TAB || file.googleScheduleTab || 'Schedule';
   const webhookUrl = process.env.GOOGLE_BOOKINGS_WEBHOOK_URL || file.googleBookingsWebhookUrl || file.googleSheetBookingsUrl || '';
   return {
     sheetId: cleanId,
@@ -49,7 +49,9 @@ export function dayToAr(dayNum) {
 export function arToDay(dayStr) {
   const s = String(dayStr || '').trim();
   const idx = DAYS_AR.findIndex(d => d === s || s.includes(d));
-  return idx >= 0 ? idx : 0;
+  if (idx >= 0) return idx;
+  if (s.includes('اثنين') || s.includes('إثنين')) return 1;
+  return 0;
 }
 
 export function fmt12(t) {
@@ -65,14 +67,24 @@ export function fmt12(t) {
 export function parseTimeTo24(str) {
   if (!str) return '06:00';
   const s = String(str).trim();
-  const m = s.match(/(\d{1,2}):(\d{2})\s*(ص|م|am|pm)?/i);
+  const m = s.match(/(\d{1,2}):(\d{2})\s*(ص|م|ظ|am|pm)?/i);
   if (!m) return s.length === 5 ? s : '06:00';
   let h = Number(m[1]);
   const min = String(m[2]).padStart(2, '0');
   const period = m[3] ? m[3].toLowerCase() : '';
-  if ((period === 'م' || period === 'pm') && h < 12) h += 12;
+  if ((period === 'م' || period === 'ظ' || period === 'pm') && h < 12) h += 12;
   if ((period === 'ص' || period === 'am') && h === 12) h = 0;
   return `${String(h).padStart(2, '0')}:${min}`;
+}
+
+export function parseTimeRange(str) {
+  if (!str) return { start: '06:00', end: '08:00' };
+  const s = String(str).trim();
+  const parts = s.split('-').map(p => p.trim());
+  if (parts.length >= 2) {
+    return { start: parseTimeTo24(parts[0]), end: parseTimeTo24(parts[1]) };
+  }
+  return { start: parseTimeTo24(s), end: parseTimeTo24(s) };
 }
 
 export function formatScheduleItemForSheet(item) {
@@ -138,28 +150,35 @@ export async function onScheduleDeleted(id) {
 export async function fetchSheetSchedule() {
   const { webhookUrl, sheetId, tab } = loadScheduleConfig();
 
-  // 1) قراءة مباشرة كـ CSV
+  // 1) قراءة مباشرة كـ CSV بتجربة التبويبات المرشحة
   if (sheetId) {
-    try {
-      const encodedTab = encodeURIComponent(tab || 'المواعيد الثابتة');
-      const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodedTab}&t=${Date.now()}`;
-      const res = await fetch(url, {
-        redirect: 'follow',
-        headers: { 'User-Agent': 'church-site-schedule-sync' },
-        signal: AbortSignal.timeout(12000),
-      });
-      if (res.ok) {
-        const text = await res.text();
-        if (!text.includes('accounts.google.com') && !/^\s*<!doctype/i.test(text)) {
-          const rows = parseCsv(text);
-          if (rows.length >= 2) {
-            const schedule = parseScheduleFromCsv(rows);
-            return { ok: true, source: 'csv', schedule };
+    const candidateTabs = [tab, '2027', '2026', 'Schedule', 'المواعيد الثابتة', 'الجدول'].filter(Boolean);
+    const uniqueTabs = [...new Set(candidateTabs)];
+
+    for (const t of uniqueTabs) {
+      try {
+        const encodedTab = encodeURIComponent(t);
+        const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodedTab}&t=${Date.now()}`;
+        const res = await fetch(url, {
+          redirect: 'follow',
+          headers: { 'User-Agent': 'church-site-schedule-sync' },
+          signal: AbortSignal.timeout(12000),
+        });
+        if (res.ok) {
+          const text = await res.text();
+          if (!text.includes('accounts.google.com') && !/^\s*<!doctype/i.test(text)) {
+            const rows = parseCsv(text);
+            if (rows.length >= 2) {
+              const schedule = parseScheduleFromCsv(rows);
+              if (schedule.length > 0) {
+                return { ok: true, source: 'csv', tab: t, schedule };
+              }
+            }
           }
         }
+      } catch (e) {
+        console.warn(`[Google Sheets] فشل قراءة تبويب ${t} كـ CSV:`, e.message);
       }
-    } catch (e) {
-      console.warn('[Google Sheets] فشل قراءة المواعيد الثابتة من CSV:', e.message);
     }
   }
 
@@ -174,12 +193,35 @@ export async function fetchSheetSchedule() {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data && Array.isArray(data.schedule)) {
+        if (data && Array.isArray(data.schedule) && data.schedule.length > 0) {
           return { ok: true, source: 'webhook', schedule: data.schedule };
         }
       }
     } catch (e) {
       console.warn('[Google Sheets] فشل قراءة المواعيد الثابتة من الـ webhook:', e.message);
+    }
+  }
+
+  // 3) قراءة محلية احتياطية من ملف كنيسة_الأنبا_أنطونيوس_الشامل.xlsx
+  const localFile = join(__dirname, '..', 'كنيسة_الأنبا_أنطونيوس_الشامل.xlsx');
+  if (existsSync(localFile)) {
+    try {
+      const mod = await import('xlsx');
+      const XLSX = mod.default || mod;
+      const buf = readFileSync(localFile);
+      const wb = XLSX.read(buf, { type: 'buffer' });
+      for (const t of ['2027', '2026', 'Schedule', 'المواعيد الثابتة']) {
+        if (wb.Sheets[t]) {
+          const csvText = XLSX.utils.sheet_to_csv(wb.Sheets[t]);
+          const rows = parseCsv(csvText);
+          const schedule = parseScheduleFromCsv(rows);
+          if (schedule.length > 0) {
+            return { ok: true, source: 'local_file', tab: t, schedule };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Google Sheets] فشل قراءة المواعيد من الملف المحلي:', e.message);
     }
   }
 
@@ -221,51 +263,96 @@ function parseCsv(text) {
 
 function parseScheduleFromCsv(rows) {
   if (!rows || rows.length < 2) return [];
-  const headers = rows[0].map(h => String(h || '').trim());
-  const findCol = (...keywords) => headers.findIndex(h => {
-    const norm = h.replace(/[\/\-_]/g, ' ').trim().toLowerCase();
-    return keywords.some(k => {
-      const kn = k.toLowerCase().trim();
-      if (norm === kn) return true;
-      if (kn === 'من') return norm === 'من' || norm.startsWith('من ') || norm.endsWith(' من');
-      if (kn === 'إلى' || kn === 'الي') return norm === 'إلى' || norm === 'الي' || norm.startsWith('إلى ') || norm.endsWith(' إلى');
-      return norm.includes(kn);
-    });
-  });
+
+  // ابحث عن صف رأس جدول المواعيد (سواء في السطور الأولى أو مدمجاً في تبويب 2027)
+  let headerIdx = -1;
+  for (let i = 0; i < rows.length; i++) {
+    const rowStr = rows[i].map(c => String(c || '').trim()).join(' ');
+    if (rowStr.includes('اليوم') && (rowStr.includes('النشاط') || rowStr.includes('نوع النشاط') || rowStr.includes('الوقت') || rowStr.includes('اسم الخدمة'))) {
+      headerIdx = i;
+      break;
+    }
+  }
+  if (headerIdx < 0) return []; // ليس جدول مواعيد
+
+  const headers = rows[headerIdx].map(h => String(h || '').trim());
+  const cleanNorm = (s) => String(s || '').replace(/[\/\-_]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  const findCol = (...keywords) => {
+    for (const k of keywords) {
+      const kn = cleanNorm(k);
+      const idx = headers.findIndex(h => cleanNorm(h) === kn);
+      if (idx >= 0) return idx;
+    }
+    for (const k of keywords) {
+      const kn = cleanNorm(k);
+      const idx = headers.findIndex(h => {
+        const norm = cleanNorm(h);
+        if (kn === 'النشاط' && norm.includes('نوع')) return false;
+        if (kn === 'من') return norm === 'من' || norm.startsWith('من ') || norm.endsWith(' من');
+        if (kn === 'إلى' || kn === 'الي') return norm === 'إلى' || norm === 'الي' || norm.startsWith('إلى ') || norm.endsWith(' إلى');
+        return norm.includes(kn);
+      });
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  };
 
   const idCol = findCol('م', 'مسلسل', 'id');
   const seasonCol = findCol('الموسم', 'season');
   const dayCol = findCol('اليوم', 'day');
-  const typeCol = findCol('النوع', 'type');
-  const nameCol = findCol('اسم الخدمة', 'الخدمة', 'النشاط', 'name');
-  const segmentCol = findCol('المرحلة', 'الفئة', 'segment');
+  const timeRangeCol = findCol('الوقت', 'time');
+  const typeCol = findCol('نوع النشاط', 'النوع', 'type');
+  const nameCol = findCol('النشاط / الإجتماع', 'النشاط الإجتماع', 'النشاط والإجتماع', 'اسم الخدمة', 'الخدمة', 'النشاط', 'name');
+  const segmentCol = findCol('القطاع', 'المرحلة', 'الفئة', 'segment');
   const placeCol = findCol('المكان', 'place');
   const startCol = findCol('من', 'start');
   const endCol = findCol('إلى', 'الي', 'end');
-  const respCol = findCol('المسؤول', 'الخادم', 'responsible');
+  const respCol = findCol('المسئول', 'المسؤول', 'الخادم', 'responsible');
   const phoneCol = findCol('موبايل', 'هاتف', 'phone');
   const notesCol = findCol('ملاحظات', 'notes');
 
   const out = [];
-  for (const r of rows.slice(1)) {
+  let currentDay = 'السبت';
+
+  for (const r of rows.slice(headerIdx + 1)) {
+    if (!r || !r.some(c => c && String(c).trim())) continue;
+
+    // تتبع اليوم حتى مع الخلايا المدمجة
+    const rawDay = dayCol >= 0 ? String(r[dayCol] || '').trim() : '';
+    if (rawDay && ['السبت', 'الأحد', 'الاثنين', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة'].some(d => rawDay.includes(d))) {
+      currentDay = rawDay;
+    }
+
     const rawId = idCol >= 0 ? String(r[idCol] || '').replace('#', '').trim() : '';
     const id = Number(rawId) || null;
     const name = nameCol >= 0 ? String(r[nameCol] || '').trim() : '';
-    if (!name && !id) continue;
+    if (!name) continue;
+
+    // استخراج الوقت (سواء عمودين منفصلين أو عمود نطاق مثل: 6:00 ص - 8:00 ص)
+    let start = '06:00';
+    let end = '08:00';
+    if (timeRangeCol >= 0 && r[timeRangeCol]) {
+      const parsedRange = parseTimeRange(r[timeRangeCol]);
+      start = parsedRange.start;
+      end = parsedRange.end;
+    } else {
+      if (startCol >= 0 && r[startCol]) start = parseTimeTo24(r[startCol]);
+      if (endCol >= 0 && r[endCol]) end = parseTimeTo24(r[endCol]);
+    }
 
     out.push({
       id,
-      season_name: seasonCol >= 0 ? String(r[seasonCol] || '').trim() : 'الأيام السنوية',
-      day_name: dayCol >= 0 ? String(r[dayCol] || '').trim() : 'الأحد',
-      type: typeCol >= 0 ? String(r[typeCol] || '').trim() : 'صلوات طقسية',
+      season_name: seasonCol >= 0 && r[seasonCol] ? String(r[seasonCol]).trim() : 'الأيام السنوية',
+      day_name: currentDay,
+      type: typeCol >= 0 && r[typeCol] ? String(r[typeCol]).trim() : 'صلوات طقسية',
       name,
-      segment: segmentCol >= 0 ? String(r[segmentCol] || '').trim() : '',
-      place_name: placeCol >= 0 ? String(r[placeCol] || '').trim() : '',
-      start: startCol >= 0 ? String(r[startCol] || '').trim() : '06:00',
-      end: endCol >= 0 ? String(r[endCol] || '').trim() : '08:30',
-      responsible: respCol >= 0 ? String(r[respCol] || '').trim() : '',
-      phone: phoneCol >= 0 ? String(r[phoneCol] || '').trim() : '',
-      notes: notesCol >= 0 ? String(r[notesCol] || '').trim() : '',
+      segment: segmentCol >= 0 && r[segmentCol] ? String(r[segmentCol]).trim() : '',
+      place_name: placeCol >= 0 && r[placeCol] ? String(r[placeCol]).trim() : '',
+      start,
+      end,
+      responsible: respCol >= 0 && r[respCol] ? String(r[respCol]).trim() : '',
+      phone: phoneCol >= 0 && r[phoneCol] ? String(r[phoneCol]).trim() : '',
+      notes: notesCol >= 0 && r[notesCol] ? String(r[notesCol]).trim() : '',
     });
   }
   return out;
@@ -283,7 +370,6 @@ export async function syncFixedScheduleFromSheet(db) {
     const clean = String(name).trim();
     const match = seasons.find(s => s.name.trim() === clean);
     if (match) return match.id;
-    // إضافة الموسم لو مش موجود
     const added = db.addSeason ? db.addSeason(clean) : null;
     return added ? added.id : (seasons[0]?.id || 1);
   };
@@ -292,7 +378,7 @@ export async function syncFixedScheduleFromSheet(db) {
   const getPlaceId = (name) => {
     if (!name) return places[0]?.id || 1;
     const clean = String(name).trim();
-    const match = places.find(p => p.name.trim() === clean);
+    const match = places.find(p => p.name.trim() === clean || clean.includes(p.name.trim()));
     return match ? match.id : (places[0]?.id || 1);
   };
 
@@ -340,36 +426,45 @@ export async function syncFixedScheduleFromSheet(db) {
         updatedCount++;
       }
     } else {
-      // ميعاد جديد أضيف في الشيت
-      const payload = {
-        season_id,
-        day,
-        start,
-        end,
-        type: item.type,
-        name: item.name,
-        segment: item.segment || '',
-        place_id,
-        responsible: item.responsible || '',
-        phone: item.phone || '',
-        notes: item.notes || '',
-      };
-      if (item.id && db.insertScheduleWithId) {
-        db.insertScheduleWithId({ id: item.id, ...payload });
-        sheetIds.add(item.id);
+      // ميعاد جديد أضيف في الشيت أو مطابق بالاسم واليوم
+      const matchByName = localSchedule.find(s => s.day === day && s.name.trim() === item.name.trim());
+      if (matchByName) {
+        sheetIds.add(matchByName.id);
+        db.updateSchedule(matchByName.id, {
+          season_id,
+          day,
+          start,
+          end,
+          type: item.type,
+          name: item.name,
+          segment: item.segment || '',
+          place_id,
+          responsible: item.responsible || '',
+          phone: item.phone || '',
+          notes: item.notes || '',
+        });
+        updatedCount++;
       } else {
-        const ins = db.addSchedule(payload);
-        if (ins) sheetIds.add(ins.id);
-      }
-      updatedCount++;
-    }
-  }
-
-  // حذف المواعيد الثابتة التي حُذفت من الشيت (لو كانت هناك مواعيد كافية في الشيت للتأكيد)
-  if (res.schedule.length >= 10) {
-    for (const cur of localSchedule) {
-      if (!sheetIds.has(cur.id)) {
-        db.deleteSchedule(cur.id);
+        const payload = {
+          season_id,
+          day,
+          start,
+          end,
+          type: item.type,
+          name: item.name,
+          segment: item.segment || '',
+          place_id,
+          responsible: item.responsible || '',
+          phone: item.phone || '',
+          notes: item.notes || '',
+        };
+        if (item.id && db.insertScheduleWithId) {
+          db.insertScheduleWithId({ id: item.id, ...payload });
+          sheetIds.add(item.id);
+        } else {
+          const ins = db.addSchedule(payload);
+          if (ins) sheetIds.add(ins.id);
+        }
         updatedCount++;
       }
     }

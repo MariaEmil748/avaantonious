@@ -14,9 +14,16 @@ function loadConfig() {
   if (existsSync(configPath)) {
     try { file = JSON.parse(readFileSync(configPath, 'utf8')); } catch { file = {}; }
   }
-  const raw = process.env.GOOGLE_SHEET_ID || file.googleSheetId || file.googleSheetUrl || '';
+  const raw = process.env.GOOGLE_SHEET_ID
+    || file.googleSheetId
+    || file.googleBookingsSheetId
+    || file.googleSheetUrl
+    || '';
   const id = extractSheetId(raw);
-  const tab = process.env.GOOGLE_SHEET_TAB || file.googleSheetTab || 'Admins';
+  const tab = process.env.GOOGLE_SHEET_TAB
+    || file.googleUsersTab
+    || file.googleSheetTab
+    || 'المستخدمين';
   return { id, tab };
 }
 
@@ -90,17 +97,18 @@ function safeEqual(a, b) {
 }
 
 async function fetchCsv(id, tab) {
-  const encodedTab = encodeURIComponent(tab);
-  const urls = [
-    `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&sheet=${encodedTab}`,
-    `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&sheet=${encodedTab}`,
-  ];
+  const candidateTabs = [tab, 'المستخدمين', 'accounts admin', 'accounts', 'Admins', 'Users'].filter(Boolean);
+  const uniqueTabs = [...new Set(candidateTabs)];
   let lastErr = 'تعذر قراءة الجدول';
-  for (const url of urls) {
+
+  for (const t of uniqueTabs) {
+    const encodedTab = encodeURIComponent(t);
+    const url = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodedTab}&t=${Date.now()}`;
     try {
       const res = await fetch(url, {
         redirect: 'follow',
         headers: { 'User-Agent': 'church-site-admin-auth' },
+        signal: AbortSignal.timeout(3500),
       });
       const text = await res.text();
       if (!res.ok) {
@@ -111,7 +119,9 @@ async function fetchCsv(id, tab) {
         lastErr = 'الجدول مش مشارك للعامة. من Google Sheet: Share → Anyone with the link → Viewer';
         continue;
       }
-      return text;
+      if (text.trim().length > 10 && (text.includes('username') || text.includes('user') || text.includes('مستخدم'))) {
+        return text;
+      }
     } catch (e) {
       lastErr = e.message || lastErr;
     }
@@ -161,16 +171,41 @@ async function loadAdmins() {
   if (cache.rows && now - cache.at < CACHE_MS) return cache.rows;
   if (cache.err && now - cache.at < 5000) throw new Error(cache.err);
   const { id, tab } = loadConfig();
-  if (!id) throw new Error('لم يُضبط رقم جدول Google Sheet في config.json');
-  try {
-    const csv = await fetchCsv(id, tab);
-    const rows = rowsFromCsv(csv);
-    cache = { at: now, rows, err: null };
-    return rows;
-  } catch (e) {
-    cache = { at: now, rows: null, err: e.message || 'تعذر قراءة الجدول' };
-    throw e;
+
+  // 1) محاولة القراءة من Google Sheets أونلاين
+  if (id) {
+    try {
+      const csv = await fetchCsv(id, tab);
+      const rows = rowsFromCsv(csv);
+      if (rows && rows.length > 0) {
+        cache = { at: now, rows, err: null };
+        return rows;
+      }
+    } catch (e) {
+      // إذا لم يكن تبويب المستخدمين مضافاً بعد في جوجل شيت، ننتقل للقراءة الاحتياطية
+    }
   }
+
+  // 2) القراءة من ملف الإكسيل الشامل كنيسة_الأنبا_أنطونيوس_الشامل.xlsx
+  const localFile = join(__dirname, '..', 'كنيسة_الأنبا_أنطونيوس_الشامل.xlsx');
+  if (existsSync(localFile)) {
+    try {
+      const mod = await import('xlsx');
+      const XLSX = mod.default || mod;
+      const buf = readFileSync(localFile);
+      const wb = XLSX.read(buf, { type: 'buffer' });
+      const ws = wb.Sheets['المستخدمين'] || wb.Sheets['Sheet1'] || wb.Sheets['Admins'];
+      if (ws) {
+        const csv = XLSX.utils.sheet_to_csv(ws);
+        const rows = rowsFromCsv(csv);
+        cache = { at: now, rows, err: null };
+        return rows;
+      }
+    } catch (err2) {}
+  }
+
+  cache = { at: now, rows: null, err: 'تعذر قراءة المستخدمين من الجدول' };
+  throw new Error('تعذر قراءة المستخدمين من الجدول');
 }
 
 export async function verifyAdmin(username, password) {
