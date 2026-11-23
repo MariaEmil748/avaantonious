@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { extractCsvSection } from './sheetSchedule.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const configPath = join(__dirname, '..', 'config.json');
@@ -155,8 +156,103 @@ export async function getChurchCalendar() {
 
   const cfg = loadConfig();
   const sheetId = cfg.googleSheetId || '1bdMNP7D4u8GGb2s3YqBE7mfNaERrOUZL';
+  const mainTab = cfg.googleMainTab || 'الجدول';
 
-  // 1) محاولة القراءة مباشرة من Google Sheet أونلاين
+  // 1) القراءة من تاب «البيانات»/«الجدول» الموحد (قسم ##CAL## المدمج)
+  if (sheetId) {
+    for (const t of ['البيانات', mainTab]) {
+    try {
+      const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(t)}&t=${Date.now()}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
+      if (res.ok) {
+        const text = await res.text();
+        if (!text.includes('accounts.google.com') && !/^\s*<!doctype/i.test(text)) {
+          // الشكل الجديد: قسم واحد ##CAL## فيه صف فاصل لكل سنة — مع fallback للشكل القديم
+          const secCal = extractCsvSection(text, '##CAL##', null);
+          let cal2026 = null, cal2027 = null;
+          if (secCal) {
+            const allRows = parseCsv(secCal);
+            const parts = { 2026: [], 2027: [] };
+            let cur = 2026;
+            for (const r of allRows) {
+              const a = String(r[0] || '').trim();
+              const ym = a.match(/^(20\d{2})/);
+              const restEmpty = r.slice(1).every(c => String(c).trim() === '');
+              if (ym && restEmpty && a.length <= 12 && (ym[1] === '2026' || ym[1] === '2027')) {
+                cur = Number(ym[1]);
+                continue;
+              }
+              if (cur === 2026) parts[2026].push(r); else parts[2027].push(r);
+            }
+            cal2026 = parseCalendarRows(parts[2026], 2026);
+            cal2027 = parseCalendarRows(parts[2027], 2027);
+          } else {
+            const sec26 = extractCsvSection(text, '##CAL2026##', '##CAL2027##');
+            const sec27 = extractCsvSection(text, '##CAL2027##', null);
+            if (sec26 || sec27) {
+              cal2026 = sec26 ? parseCalendarRows(parseCsv(sec26), 2026) : { year: 2026, months: [], events: [] };
+              cal2027 = sec27 ? parseCalendarRows(parseCsv(sec27), 2027) : { year: 2027, months: [], events: [] };
+            }
+          }
+          if (cal2026 || cal2027) {
+            cal2026 = cal2026 || { year: 2026, months: [], events: [] };
+            cal2027 = cal2027 || { year: 2027, months: [], events: [] };
+            if (cal2026.events.length > 0 || cal2027.events.length > 0) {
+              cachedCalendar = {
+                ok: true,
+                source: 'google_sheets_main',
+                rules,
+                y2026: cal2026,
+                y2027: cal2027,
+                totalEvents: cal2026.events.length + cal2027.events.length
+              };
+              lastLoadAt = now;
+              return cachedCalendar;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Calendar] تعذر جلب التقويم من التاب:', e.message);
+    }
+    }
+  }
+
+  // 1.5) القراءة من الـ Webhook (doGet) — بيرجع calendar2026 / calendar2027 من تاب «الجدول»
+  if (cfg.googleBookingsWebhookUrl) {
+    try {
+      const res = await fetch(cfg.googleBookingsWebhookUrl, {
+        headers: { 'User-Agent': 'church-site-calendar-sync' },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(15000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const rows26 = Array.isArray(data.calendar2026) ? data.calendar2026 : null;
+        const rows27 = Array.isArray(data.calendar2027) ? data.calendar2027 : null;
+        if (rows26 || rows27) {
+          const cal2026 = rows26 ? parseCalendarRows(rows26, 2026) : { year: 2026, months: [], events: [] };
+          const cal2027 = rows27 ? parseCalendarRows(rows27, 2027) : { year: 2027, months: [], events: [] };
+          if (cal2026.events.length > 0 || cal2027.events.length > 0) {
+            cachedCalendar = {
+              ok: true,
+              source: 'webhook',
+              rules,
+              y2026: cal2026,
+              y2027: cal2027,
+              totalEvents: cal2026.events.length + cal2027.events.length
+            };
+            lastLoadAt = now;
+            return cachedCalendar;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Calendar] تعذر جلب التقويم من الـ webhook:', e.message);
+    }
+  }
+
+  // 2) احتياطي: التابات القديمة 2026 / 2027 مباشرة
   if (sheetId) {
     try {
       // 2027 (gid=435021476 أو تبويب 2027)

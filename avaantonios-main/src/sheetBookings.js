@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { extractCsvSection } from './sheetSchedule.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const configPath = join(__dirname, '..', 'config.json');
@@ -25,10 +26,12 @@ export function loadBookingsConfig() {
     || '';
   const cleanId = extractSheetId(sheetId);
   const tab = process.env.GOOGLE_BOOKINGS_TAB || file.googleBookingsTab || 'المواعيد';
+  const mainTab = process.env.GOOGLE_MAIN_TAB || file.googleMainTab || 'الجدول';
   const webhookUrl = process.env.GOOGLE_BOOKINGS_WEBHOOK_URL || file.googleBookingsWebhookUrl || file.googleSheetBookingsUrl || '';
   return {
     sheetId: cleanId,
     tab,
+    mainTab,
     webhookUrl: String(webhookUrl).trim(),
     sheetUrl: cleanId ? `https://docs.google.com/spreadsheets/d/${cleanId}/edit` : '',
   };
@@ -180,7 +183,7 @@ async function sendWebhook(action, payload) {
       },
       body: bodyData,
       redirect: 'follow',
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(120000),
     });
 
     const text = await res.text();
@@ -241,12 +244,33 @@ export async function pushAllBookings(bookingsList) {
 }
 
 export async function fetchSheetBookings() {
-  const { webhookUrl, sheetId, tab } = loadBookingsConfig();
+  const { webhookUrl, sheetId, tab, mainTab } = loadBookingsConfig();
 
-  // طريقة 1: القراءة المباشرة كـ CSV بتجربة التبويبات المرشحة
+  // طريقة 1: الـ Webhook أولاً — بيانات منظمة ونظيفة (الـ CSV بيتلخبط مع التاب الموحد)
+  if (webhookUrl) {
+    try {
+      const res = await fetch(webhookUrl, {
+        method: 'GET',
+        headers: { 'User-Agent': 'church-site-bookings-sync' },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(12000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.bookings)) {
+          return { ok: true, source: 'webhook', bookings: data.bookings };
+        }
+      }
+    } catch (e) {
+      console.warn('[Google Sheets] فشل القراءة من الـ webhook:', e.message);
+    }
+  }
+
+  // طريقة 2: القراءة المباشرة كـ CSV — تاب «الجدول» الموحد أولاً ثم التابات القديمة
   if (sheetId) {
-    const candidateTabs = [...new Set([tab, 'المواعيد', 'Bookings', 'حجوزات', 'الحجوزات'])].filter(Boolean);
-    for (const t of candidateTabs) {
+    const candidateTabs = [mainTab, 'البيانات', tab, 'المواعيد', 'Bookings', 'حجوزات', 'الحجوزات'].filter(Boolean);
+    const uniqueTabs = [...new Set(candidateTabs)];
+    for (const t of uniqueTabs) {
       try {
         const encodedTab = encodeURIComponent(t);
         const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodedTab}&t=${Date.now()}`;
@@ -258,7 +282,14 @@ export async function fetchSheetBookings() {
         if (res.ok) {
           const text = await res.text();
           if (!text.includes('accounts.google.com') && !/^\s*<!doctype/i.test(text)) {
-            const rows = parseCsv(text);
+            let csvText = text;
+            if (t === mainTab || t === 'البيانات') {
+              const sec = extractCsvSection(text, '##BOOKINGS##', '##CAL##')
+                || extractCsvSection(text, '##BOOKINGS##', '##CAL2026##');
+              if (!sec) continue;
+              csvText = sec;
+            }
+            const rows = parseCsv(csvText);
             if (rows.length >= 2) {
               const bookings = parseBookingsFromCsv(rows);
               if (bookings.length > 0) {
@@ -270,26 +301,6 @@ export async function fetchSheetBookings() {
       } catch (e) {
         // تجربة التبويب التالي
       }
-    }
-  }
-
-  // طريقة 2: عن طريق الـ Webhook (doGet)
-  if (webhookUrl) {
-    try {
-      const res = await fetch(webhookUrl, {
-        method: 'GET',
-        headers: { 'User-Agent': 'church-site-bookings-sync' },
-        redirect: 'follow',
-        signal: AbortSignal.timeout(12000),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && Array.isArray(data.bookings) && data.bookings.length > 0) {
-          return { ok: true, source: 'webhook', bookings: data.bookings };
-        }
-      }
-    } catch (e) {
-      console.warn('[Google Sheets] فشل القراءة من الـ webhook:', e.message);
     }
   }
 
@@ -449,7 +460,7 @@ export async function syncFromSheet(db) {
     // أ) تم حذف الصف من Google Sheet
     if (!item) {
       const ageMs = Date.now() - new Date(current.created_at).getTime();
-      if (sheetMap.size > 0 && (isNaN(ageMs) || ageMs > 12000)) {
+      if (sheetMap.size > 0 && (isNaN(ageMs) || ageMs > 120000)) {
         db.deleteBooking(current.id);
         updatedCount++;
         changes.push({ id: current.id, service_name: current.service_name, action: 'deleted_from_sheet' });

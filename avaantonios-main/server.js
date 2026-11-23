@@ -126,7 +126,7 @@ async function api(req, res, path, q) {
   }
 
   if (path === '/api/schedule' && method === 'GET') {
-    await autoSyncWithSheet(3000);
+    autoSyncWithSheet(3000); // غير حاجب — المزامنة الدورية بتحدث البيانات كل 8 ثواني
     const rows = db.listSchedule({ seasonId: q.get('seasonId') || null, day: q.get('day'), placeId: q.get('placeId') || null, type: q.get('type') || null });
     if (!canSeePhones(req)) for (const r of rows) { r.has_phone = !!r.phone; r.phone = ''; }
     return json(res, 200, rows);
@@ -138,7 +138,7 @@ async function api(req, res, path, q) {
   }
 
   if (path === '/api/approved-bookings' && method === 'GET') {
-    await autoSyncWithSheet(3000);
+    autoSyncWithSheet(3000); // غير حاجب
     const from = q.get('from') || new Date().toISOString().slice(0, 10);
     const rows = db.listApprovedUpcoming({ from, placeId: q.get('placeId') || null });
     if (!canSeePhones(req)) for (const r of rows) { r.has_contact = !!r.requester_phone; r.requester_phone = ''; }
@@ -268,7 +268,7 @@ async function api(req, res, path, q) {
 
   if (path === '/api/admin/bookings' && method === 'GET') {
     if (need('bookings.approve', 'bookings.edit')) return;
-    await autoSyncWithSheet(2500);
+    autoSyncWithSheet(2500); // غير حاجب
     return json(res, 200, db.listBookings({ status: q.get('status') || null }));
   }
 

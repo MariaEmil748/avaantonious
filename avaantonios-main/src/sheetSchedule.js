@@ -25,10 +25,12 @@ export function loadScheduleConfig() {
     || '';
   const cleanId = extractSheetId(sheetId);
   const tab = process.env.GOOGLE_SCHEDULE_TAB || file.googleScheduleTab || 'Schedule';
+  const mainTab = process.env.GOOGLE_MAIN_TAB || file.googleMainTab || 'الجدول';
   const webhookUrl = process.env.GOOGLE_BOOKINGS_WEBHOOK_URL || file.googleBookingsWebhookUrl || file.googleSheetBookingsUrl || '';
   return {
     sheetId: cleanId,
     tab,
+    mainTab,
     webhookUrl: String(webhookUrl).trim(),
     sheetUrl: cleanId ? `https://docs.google.com/spreadsheets/d/${cleanId}/edit` : '',
   };
@@ -147,42 +149,37 @@ export async function onScheduleDeleted(id) {
   return await sendWebhook('deleteScheduleEntry', { id });
 }
 
-export async function fetchSheetSchedule() {
-  const { webhookUrl, sheetId, tab } = loadScheduleConfig();
-
-  // 1) قراءة مباشرة كـ CSV بتجربة التبويبات المرشحة
-  if (sheetId) {
-    const candidateTabs = [tab, '2027', '2026', 'Schedule', 'المواعيد الثابتة', 'الجدول'].filter(Boolean);
-    const uniqueTabs = [...new Set(candidateTabs)];
-
-    for (const t of uniqueTabs) {
-      try {
-        const encodedTab = encodeURIComponent(t);
-        const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodedTab}&t=${Date.now()}`;
-        const res = await fetch(url, {
-          redirect: 'follow',
-          headers: { 'User-Agent': 'church-site-schedule-sync' },
-          signal: AbortSignal.timeout(12000),
-        });
-        if (res.ok) {
-          const text = await res.text();
-          if (!text.includes('accounts.google.com') && !/^\s*<!doctype/i.test(text)) {
-            const rows = parseCsv(text);
-            if (rows.length >= 2) {
-              const schedule = parseScheduleFromCsv(rows);
-              if (schedule.length > 0) {
-                return { ok: true, source: 'csv', tab: t, schedule };
-              }
-            }
-          }
-        }
-      } catch (e) {
-        console.warn(`[Google Sheets] فشل قراءة تبويب ${t} كـ CSV:`, e.message);
-      }
+export function extractCsvSection(text, startMark, endMark) {
+  const lines = String(text || '').split(/\r?\n/);
+  const firstCell = (l) => {
+    let s = String(l || '').trim();
+    if (s.startsWith('"')) {
+      const end = s.indexOf('",');
+      s = end > 0 ? s.slice(1, end) : s.replace(/^"|"$/g, '');
+    } else {
+      const c = s.indexOf(',');
+      if (c >= 0) s = s.slice(0, c);
+    }
+    return s.trim();
+  };
+  let s = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (firstCell(lines[i]) === startMark) { s = i; break; }
+  }
+  if (s < 0) return null;
+  let e = lines.length;
+  if (endMark) {
+    for (let i = s + 1; i < lines.length; i++) {
+      if (firstCell(lines[i]) === endMark) { e = i; break; }
     }
   }
+  return lines.slice(s + 1, e).join('\n');
+}
 
-  // 2) قراءة من Webhook
+export async function fetchSheetSchedule() {
+  const { webhookUrl, sheetId, tab, mainTab } = loadScheduleConfig();
+
+  // 1) Webhook أولاً — بيرجع بيانات منظمة ونظيفة (الـ CSV بيتلخبط مع التاب الموحد)
   if (webhookUrl) {
     try {
       const res = await fetch(webhookUrl, {
@@ -199,6 +196,44 @@ export async function fetchSheetSchedule() {
       }
     } catch (e) {
       console.warn('[Google Sheets] فشل قراءة المواعيد الثابتة من الـ webhook:', e.message);
+    }
+  }
+
+  // 2) قراءة مباشرة كـ CSV — تاب «الجدول» الموحد أولاً ثم التابات القديمة
+  if (sheetId) {
+    const candidateTabs = [mainTab, 'البيانات', tab, 'Schedule', 'المواعيد الثابتة', '2027', '2026'].filter(Boolean);
+    const uniqueTabs = [...new Set(candidateTabs)];
+
+    for (const t of uniqueTabs) {
+      try {
+        const encodedTab = encodeURIComponent(t);
+        const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodedTab}&t=${Date.now()}`;
+        const res = await fetch(url, {
+          redirect: 'follow',
+          headers: { 'User-Agent': 'church-site-schedule-sync' },
+          signal: AbortSignal.timeout(12000),
+        });
+        if (res.ok) {
+          const text = await res.text();
+          if (!text.includes('accounts.google.com') && !/^\s*<!doctype/i.test(text)) {
+            let csvText = text;
+            if (t === mainTab || t === 'البيانات') {
+              const sec = extractCsvSection(text, '##SCHEDULE##', '##BOOKINGS##');
+              if (!sec) continue;
+              csvText = sec;
+            }
+            const rows = parseCsv(csvText);
+            if (rows.length >= 2) {
+              const schedule = parseScheduleFromCsv(rows);
+              if (schedule.length > 0) {
+                return { ok: true, source: 'csv', tab: t, schedule };
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`[Google Sheets] فشل قراءة تبويب ${t} كـ CSV:`, e.message);
+      }
     }
   }
 
@@ -358,6 +393,8 @@ function parseScheduleFromCsv(rows) {
   return out;
 }
 
+let lastScheduleSignature = '';
+
 export async function syncFixedScheduleFromSheet(db) {
   const res = await fetchSheetSchedule();
   if (!res.ok || !Array.isArray(res.schedule) || res.schedule.length === 0) {
@@ -378,101 +415,47 @@ export async function syncFixedScheduleFromSheet(db) {
   const getPlaceId = (name) => {
     if (!name) return places[0]?.id || 1;
     const clean = String(name).trim();
-    const match = places.find(p => p.name.trim() === clean || clean.includes(p.name.trim()));
+    const match = places.find(p => p.name.trim() === clean || clean.includes(p.name.trim()) || p.name.trim().includes(clean));
     return match ? match.id : (places[0]?.id || 1);
   };
 
-  const localSchedule = db.listSchedule();
-  const localMap = new Map(localSchedule.map(s => [s.id, s]));
-  const sheetIds = new Set();
-  let updatedCount = 0;
+  // الشيت هو المصدر الوحيد للحقيقة — نبني الصفوف كاملة ثم نستبدل الجدول المحلي
+  const rows = res.schedule.map(item => {
+    const rawId = item.id ? Number(String(item.id).replace('#', '').trim()) : null;
+    return {
+      id: rawId && rawId > 0 ? rawId : null,
+      season_id: getSeasonId(item.season_name),
+      day: arToDay(item.day_name),
+      start: parseTimeTo24(item.start),
+      end: parseTimeTo24(item.end),
+      type: item.type || '',
+      name: item.name,
+      segment: item.segment || '',
+      place_id: getPlaceId(item.place_name),
+      responsible: item.responsible || '',
+      phone: item.phone || '',
+      notes: item.notes || '',
+    };
+  }).filter(r => r.name);
 
-  for (const item of res.schedule) {
-    const season_id = getSeasonId(item.season_name);
-    const day = arToDay(item.day_name);
-    const place_id = getPlaceId(item.place_name);
-    const start = parseTimeTo24(item.start);
-    const end = parseTimeTo24(item.end);
+  const sig = JSON.stringify(rows.map(r => [r.season_id, r.day, r.start, r.end, r.type, r.name, r.segment, r.place_id, r.responsible, r.phone, r.notes]));
+  if (sig === lastScheduleSignature) {
+    return { ok: true, totalInSheet: rows.length, updatedCount: 0, skipped: true };
+  }
+  lastScheduleSignature = sig;
 
-    if (item.id && localMap.has(item.id)) {
-      sheetIds.add(item.id);
-      const cur = localMap.get(item.id);
-      const hasDiff = cur.season_id !== season_id
-        || cur.day !== day
-        || cur.place_id !== place_id
-        || cur.start !== start
-        || cur.end !== end
-        || cur.type !== item.type
-        || cur.name !== item.name
-        || (cur.segment || '') !== (item.segment || '')
-        || (cur.responsible || '') !== (item.responsible || '')
-        || (cur.phone || '') !== (item.phone || '')
-        || (cur.notes || '') !== (item.notes || '');
-
-      if (hasDiff) {
-        db.updateSchedule(item.id, {
-          season_id,
-          day,
-          start,
-          end,
-          type: item.type,
-          name: item.name,
-          segment: item.segment || '',
-          place_id,
-          responsible: item.responsible || '',
-          phone: item.phone || '',
-          notes: item.notes || '',
-        });
-        updatedCount++;
-      }
-    } else {
-      // ميعاد جديد أضيف في الشيت أو مطابق بالاسم واليوم
-      const matchByName = localSchedule.find(s => s.day === day && s.name.trim() === item.name.trim());
-      if (matchByName) {
-        sheetIds.add(matchByName.id);
-        db.updateSchedule(matchByName.id, {
-          season_id,
-          day,
-          start,
-          end,
-          type: item.type,
-          name: item.name,
-          segment: item.segment || '',
-          place_id,
-          responsible: item.responsible || '',
-          phone: item.phone || '',
-          notes: item.notes || '',
-        });
-        updatedCount++;
-      } else {
-        const payload = {
-          season_id,
-          day,
-          start,
-          end,
-          type: item.type,
-          name: item.name,
-          segment: item.segment || '',
-          place_id,
-          responsible: item.responsible || '',
-          phone: item.phone || '',
-          notes: item.notes || '',
-        };
-        if (item.id && db.insertScheduleWithId) {
-          db.insertScheduleWithId({ id: item.id, ...payload });
-          sheetIds.add(item.id);
-        } else {
-          const ins = db.addSchedule(payload);
-          if (ins) sheetIds.add(ins.id);
-        }
-        updatedCount++;
-      }
-    }
+  db.clearSchedule();
+  for (const r of rows) {
+    const payload = { ...r };
+    delete payload.id;
+    if (r.id && db.insertScheduleWithId) db.insertScheduleWithId({ id: r.id, ...payload });
+    else db.addSchedule(payload);
   }
 
   return {
     ok: true,
-    totalInSheet: res.schedule.length,
-    updatedCount,
+    totalInSheet: rows.length,
+    updatedCount: rows.length,
+    replaced: true,
   };
 }

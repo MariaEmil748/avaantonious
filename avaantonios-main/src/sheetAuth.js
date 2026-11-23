@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { loadBookingsConfig } from './sheetBookings.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const configPath = join(__dirname, '..', 'config.json');
@@ -96,6 +97,28 @@ function safeEqual(a, b) {
   return timingSafeEqual(ha, hb);
 }
 
+async function fetchUsersFromWebhook() {
+  const { webhookUrl } = loadBookingsConfig();
+  if (!webhookUrl) return null;
+  const res = await fetch(webhookUrl, {
+    redirect: 'follow',
+    headers: { 'User-Agent': 'church-site-admin-auth' },
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data || !Array.isArray(data.users)) return null;
+  return data.users
+    .map(u => ({
+      username: String(u.username || '').trim(),
+      password: String(u.password || ''),
+      display_name: String(u.display_name || u.username || '').trim(),
+      active: u.active !== false && !['0', 'no', 'false', 'off', 'لا'].includes(String(u.active ?? '1').trim().toLowerCase()),
+      level: parseLevel(u.level),
+    }))
+    .filter(u => u.username);
+}
+
 async function fetchCsv(id, tab) {
   const candidateTabs = [tab, 'المستخدمين', 'accounts admin', 'accounts', 'Admins', 'Users'].filter(Boolean);
   const uniqueTabs = [...new Set(candidateTabs)];
@@ -171,8 +194,17 @@ async function loadAdmins() {
   if (cache.rows && now - cache.at < CACHE_MS) return cache.rows;
   if (cache.err && now - cache.at < 5000) throw new Error(cache.err);
   const { id, tab } = loadConfig();
+  
+  // 1) محاولة القراءة من Google Apps Script (users من Google Sheet مباشرة)
+  try {
+    const webhookRows = await fetchUsersFromWebhook();
+    if (webhookRows && webhookRows.length > 0) {
+      cache = { at: now, rows: webhookRows, err: null };
+      return webhookRows;
+    }
+  } catch {}
 
-  // 1) محاولة القراءة من Google Sheets أونلاين
+  // 2) محاولة القراءة من Google Sheets أونلاين كـ CSV
   if (id) {
     try {
       const csv = await fetchCsv(id, tab);
@@ -186,7 +218,7 @@ async function loadAdmins() {
     }
   }
 
-  // 2) القراءة من ملف الإكسيل الشامل كنيسة_الأنبا_أنطونيوس_الشامل.xlsx
+  // 3) القراءة من ملف الإكسيل الشامل كنيسة_الأنبا_أنطونيوس_الشامل.xlsx
   const localFile = join(__dirname, '..', 'كنيسة_الأنبا_أنطونيوس_الشامل.xlsx');
   if (existsSync(localFile)) {
     try {

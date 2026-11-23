@@ -299,6 +299,7 @@ export function updateSchedule(id, e) {
   return getSchedule(id);
 }
 export function deleteSchedule(id) { db.prepare('DELETE FROM schedule WHERE id=?').run(id); }
+export function clearSchedule() { db.prepare('DELETE FROM schedule').run(); }
 
 // ---------- conflict detection ----------
 // يقارن اقتراح (عادي أو أسبوعي) مع: الحجوزات الأخرى (بما فيها المتكرّرة) + الجدول الأسبوعي النشط

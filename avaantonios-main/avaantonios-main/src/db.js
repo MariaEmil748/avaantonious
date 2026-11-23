@@ -287,12 +287,19 @@ export function addSchedule(e) {
     .run(e.season_id, e.day, e.start, e.end, e.type || '', e.name, e.segment || '', e.place_id || null, e.responsible || '', e.phone || '', e.notes || '');
   return getSchedule(r.lastInsertRowid);
 }
+export function insertScheduleWithId(e) {
+  db.prepare(`INSERT OR REPLACE INTO schedule (id, season_id, day, start, end, type, name, segment, place_id, responsible, phone, notes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(e.id, e.season_id, e.day, e.start, e.end, e.type || '', e.name, e.segment || '', e.place_id || null, e.responsible || '', e.phone || '', e.notes || '');
+  return getSchedule(e.id);
+}
 export function updateSchedule(id, e) {
   db.prepare(`UPDATE schedule SET season_id=?, day=?, start=?, end=?, type=?, name=?, segment=?, place_id=?, responsible=?, phone=?, notes=? WHERE id=?`)
     .run(e.season_id, e.day, e.start, e.end, e.type || '', e.name, e.segment || '', e.place_id || null, e.responsible || '', e.phone || '', e.notes || '', id);
   return getSchedule(id);
 }
 export function deleteSchedule(id) { db.prepare('DELETE FROM schedule WHERE id=?').run(id); }
+export function clearSchedule() { db.prepare('DELETE FROM schedule').run(); }
 
 // ---------- conflict detection ----------
 // يقارن اقتراح (عادي أو أسبوعي) مع: الحجوزات الأخرى (بما فيها المتكرّرة) + الجدول الأسبوعي النشط
@@ -388,6 +395,40 @@ export function syncBookingStatusFromSheet(id, status, decidedAt = null, decided
   }
   return getBooking(id);
 }
+export function updateBookingFromSheet(b) {
+  db.prepare(`UPDATE bookings SET
+    place_id = COALESCE(?, place_id),
+    date = COALESCE(?, date),
+    start = COALESCE(?, start),
+    end = COALESCE(?, end),
+    service_name = COALESCE(?, service_name),
+    requester_name = COALESCE(NULLIF(?, ''), requester_name),
+    requester_phone = COALESCE(NULLIF(?, ''), requester_phone),
+    notes = COALESCE(NULLIF(?, ''), notes),
+    status = ?,
+    decided_at = ?,
+    decided_by = ?,
+    repeat = COALESCE(?, repeat),
+    repeat_end = ?
+    WHERE id = ?`
+  ).run(
+    b.place_id,
+    b.date,
+    b.start,
+    b.end,
+    b.service_name,
+    b.requester_name,
+    b.requester_phone,
+    b.notes,
+    b.status,
+    b.decided_at,
+    b.decided_by,
+    b.repeat,
+    b.repeat_end,
+    b.id
+  );
+  return getBooking(b.id);
+}
 export function insertBookingWithId(b) {
   db.prepare(`INSERT OR REPLACE INTO bookings (id, place_id, date, start, end, service_name, requester_name, requester_phone, notes, status, created_at, decided_at, repeat, repeat_end, user_id, requester_username, decided_by)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
@@ -401,7 +442,13 @@ export function deleteBooking(id) { db.prepare('DELETE FROM bookings WHERE id=?'
 export function listApprovedUpcoming({ placeId, from } = {}) {
   let sql = `SELECT b.*, p.name AS place_name FROM bookings b LEFT JOIN places p ON p.id=b.place_id WHERE b.status='approved'`;
   const args = [];
-  if (from) { sql += ' AND b.date >= ?'; args.push(from); }
+  if (from) {
+    sql += ` AND (
+      (b.repeat = 'weekly' AND (b.repeat_end IS NULL OR b.repeat_end = '' OR b.repeat_end >= ?))
+      OR (b.repeat != 'weekly' AND b.date >= ?)
+    )`;
+    args.push(from, from);
+  }
   if (placeId) { sql += ' AND b.place_id = ?'; args.push(Number(placeId)); }
   sql += ' ORDER BY b.date, b.start';
   return db.prepare(sql).all(...args);

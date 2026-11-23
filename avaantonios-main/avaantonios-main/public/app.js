@@ -169,12 +169,20 @@ async function init() {
   $('#b-date').value = new Date().toISOString().slice(0, 10);
 
   $('#f-season').onchange = $('#f-day').onchange = $('#f-place').onchange = $('#f-type').onchange = loadSchedule;
-  await loadSchedule();
-
-  const me = await api('/api/me');
+  const fDate = $('#f-date');
+  if (fDate) fDate.onchange = () => {
+    // لو اتختار تاريخ محدد → اليوم بيتحدد تلقائيًا من التاريخ
+    if (fDate.value) {
+      const wd = new Date(fDate.value + 'T00:00:00').getDay();
+      const fd = $('#f-day');
+      if (fd && fd.value !== String(wd)) fd.value = String(wd);
+    }
+    loadSchedule();
+  };
+  // تحميل متوازي — أسرع بكتير من التسلسل
+  const [_, me, uMe] = await Promise.all([loadSchedule(), api('/api/me'), api('/api/user/me')]);
   if (me.body && me.body.admin) { state.admin = me.body.admin; }
-
-  await initUser();
+  if (uMe.status === 200 && uMe.body && uMe.body.user) { state.user = uMe.body.user; }
 
   bindNav(); bindBooking(); bindAdmin(); bindArticles(); bindAccount();
   refreshAdminAccess(); // يضبط ظهور زر «لوحة التحكم» حسب جلسة المسؤول
@@ -336,7 +344,11 @@ function showCalendarModal(cal) {
 async function loadSchedule() {
   const p = new URLSearchParams();
   const seasonId = $('#f-season').value; if (seasonId) p.set('seasonId', seasonId);
-  const day = $('#f-day').value; if (day) p.set('day', day);
+  let day = $('#f-day').value;
+  const dateStr = ($('#f-date') && $('#f-date').value) || '';
+  // تاريخ محدد → يوم الأسبوع بيتحدد من التاريخ (يغلّب على فلتر اليوم)
+  if (dateStr) day = String(new Date(dateStr + 'T00:00:00').getDay());
+  if (day) p.set('day', day);
   const placeId = $('#f-place').value; if (placeId) p.set('placeId', placeId);
   const type = $('#f-type').value; if (type && type !== 'booking') p.set('type', type);
   const { body } = await api('/api/schedule?' + p);
@@ -347,12 +359,23 @@ async function loadSchedule() {
   if (!type || type === 'booking') {
     const bp = new URLSearchParams();
     const todayStr = new Date().toLocaleDateString('en-CA');
-    bp.set('from', todayStr);
+    bp.set('from', dateStr || todayStr);
     if (placeId) bp.set('placeId', placeId);
     const { status, body: ab } = await api('/api/approved-bookings?' + bp);
     if (status === 200 && Array.isArray(ab)) approved = ab;
   }
-  if (day !== '') {
+  if (dateStr) {
+    // تاريخ محدد → الحجوزات اللي بتقع على التاريخ ده بالظبط (بما فيها الأسبوعية اللي بتغطيه)
+    const wdN = Number(day);
+    approved = approved.filter(b => {
+      if (b.repeat === 'weekly') {
+        const bWd = new Date(b.date + 'T00:00:00').getDay();
+        const end = b.repeat_end || '9999-12-31';
+        return bWd === wdN && b.date <= dateStr && end >= dateStr;
+      }
+      return b.date === dateStr;
+    });
+  } else if (day !== '') {
     const wd = Number(day);
     approved = approved.filter(b => new Date(b.date + 'T00:00:00').getDay() === wd);
   }
@@ -364,28 +387,65 @@ async function loadSchedule() {
     noteEl.classList.remove('hidden');
   } else noteEl.classList.add('hidden');
 
-  renderSchedule($('#schedule-container'), (type === 'booking' ? [] : body), season, approved);
+  renderSchedule($('#schedule-container'), (type === 'booking' ? [] : body), season, approved, { date: dateStr || '', weekday: day });
 }
 
-function renderSchedule(container, rows, season, approved = []) {
+function renderSchedule(container, rows, season, approved = [], opts = {}) {
   container.innerHTML = '';
-  const byDay = {};
-  for (const r of rows) (byDay[r.day] = byDay[r.day] || []).push({ kind: 'sched', data: r });
-  for (const b of approved) {
-    const wd = new Date(b.date + 'T00:00:00').getDay();
-    (byDay[wd] = byDay[wd] || []).push({ kind: 'booking', data: b });
+  const fmtD = d => d.toLocaleDateString('en-CA');
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  let end = new Date(today); end.setDate(end.getDate() + 370);
+  approved.forEach(b => {
+    const bd = new Date((b.repeat_end || b.date || '') + 'T00:00:00');
+    if (!isNaN(bd) && bd > end) end = bd;
+  });
+
+  const byDate = {};
+  const push = (ds, it) => { (byDate[ds] = byDate[ds] || []).push(it); };
+
+  // توسيع المواعيد الثابتة الأسبوعية على كل تاريخ في الفترة
+  for (const r of rows) {
+    const wd = Number(r.day);
+    if (isNaN(wd)) continue;
+    const d = new Date(today);
+    while (d <= end) {
+      if (d.getDay() === wd) push(fmtD(d), { kind: 'sched', data: r });
+      d.setDate(d.getDate() + 1);
+    }
   }
-  const daysPresent = DAY_ORDER.filter(d => byDay[d] && byDay[d].length);
-  if (!daysPresent.length) { container.innerHTML = '<p class="muted">لا توجد مواعيد مطابقة.</p>'; return; }
+  // توسيع الحجوزات المعتمدة (أسبوعية أو فردية)
+  for (const b of approved) {
+    const s = new Date((b.date || '') + 'T00:00:00');
+    if (isNaN(s)) continue;
+    const isW = b.repeat === 'weekly' || String(b.repeat || '').indexOf('أسبوع') >= 0;
+    const limit = isW ? new Date((b.repeat_end || '9999-12-31') + 'T00:00:00') : s;
+    const d = new Date(s);
+    let g = 0;
+    while (d <= limit && d <= end && g++ < 600) {
+      if (d >= today) push(fmtD(d), { kind: 'booking', data: b });
+      if (!isW) break;
+      d.setDate(d.getDate() + 7);
+    }
+  }
+
+  let dateKeys = Object.keys(byDate).sort();
+  if (opts.date) dateKeys = dateKeys.filter(k => k === opts.date);
+  else if (opts.weekday !== null && opts.weekday !== undefined && opts.weekday !== '') {
+    const wdN = Number(opts.weekday);
+    dateKeys = dateKeys.filter(k => new Date(k + 'T00:00:00').getDay() === wdN);
+  }
+  if (!dateKeys.length) { container.innerHTML = '<p class="muted">لا توجد مواعيد مطابقة.</p>'; return; }
   if (season) {
     const h = document.createElement('div'); h.className = 'day-title';
     h.innerHTML = `<h3 style="background:var(--gold);color:#3a2b06">${esc(season.name)}</h3>`;
     container.appendChild(h);
   }
-  for (const d of daysPresent) {
-    const items = byDay[d].slice().sort((a, b) => String(a.data.start).localeCompare(String(b.data.start)));
+  for (const k of dateKeys) {
+    const items = byDate[k].slice().sort((a, b) => String(a.data.start).localeCompare(String(b.data.start)));
     const g = document.createElement('div'); g.className = 'day-group';
-    g.innerHTML = `<div class="day-title"><h3>${DAYS[d]}</h3><span class="count">${items.length} نشاط</span></div>`;
+    let label = k;
+    try { label = new Date(k + 'T00:00:00').toLocaleDateString('ar-EG', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }); } catch {}
+    g.innerHTML = `<div class="day-title"><h3>${esc(k)} — ${esc(label)}</h3><span class="count">${items.length} نشاط</span></div>`;
     for (const it of items) g.appendChild(it.kind === 'sched' ? entryEl(it.data) : bookingEntryEl(it.data));
     container.appendChild(g);
   }
@@ -804,7 +864,7 @@ async function openSheetSettingsModal() {
   openModal('إعداد ربط المواعيد مع Google Sheet', `
     <div class="sheet-setup-modal" dir="rtl">
       <p class="muted">يتم حفظ جميع طلبات المواعيد في تبويب «${esc(curTab)}» في Google Sheet، وتحديث حالة القبول والرفض فورياً للأدمن.</p>
-
+      
       <form id="sheet-config-form" class="form-grid" style="margin-top:12px">
         <div class="field span2">
           <label>رابط تطبيق الويب (Google Web App URL) *</label>

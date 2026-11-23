@@ -1,120 +1,117 @@
 /**
  * =========================================================================
  * كنيسة القديس العظيم الأنبا أنطونيوس بأرض اللواء — إيبارشية الجيزة
- * الشيت الشامل الموحد: المستخدمين + المواعيد الثابتة + طلبات الحجز
+ * الشيت النهائي: تابان فقط
  * =========================================================================
  *
- * يشمل هذا الكود إدارة 3 تبويبات في جدول واحد متكامل:
- * 1. تبويب «المستخدمين»: حسابات المسؤولين والخدام ومستويات الصلاحيات (level 1 و level 2).
- * 2. تبويب «المواعيد الثابتة»: القداسات الإلهية، الاجتماعات، ومدارس الأحد (مُحمّل بالـ 40 ميعاد).
- * 3. تبويب «المواعيد»: طلبات حجز القاعات والمذابح وقرارات الأدمن (قبول / رفض / معلق / حذف).
+ * 1) تاب «المستخدمين»: حسابات المسؤولين والخدام (level 1 / level 2).
+ * 2) تاب «الجدول»: كل بيانات المواعيد في مكان واحد، مقسّمة لأقسام:
+ *    - ##SCHEDULE##      : المواعيد الثابتة (القداسات، الاجتماعات، مدارس الأحد)
+ *    - ##BOOKINGS##      : طلبات الحجز اللي بيقدمها المستخدمين + قرارات الأدمن
+ *    - ##CAL2026##       : أحداث وتقويم سنة 2026 (أعياد وأصوام)
+ *    - ##CAL2027##       : أحداث وتقويم سنة 2027 (أعياد وأصوام)
  *
- * طريقة التشغيل السريعة:
- * 1. افتح جدول Google Sheet الجديد.
+ * طريقة التشغيل:
+ * 1. افتح جدول Google Sheet.
  * 2. من القائمة: إضافات (Extensions) -> Apps Script.
- * 3. امسح أي كود موجود والصق هذا الكود بالكامل مكانه.
- * 4. اضغط حفظ (أيقونة الديسك 💾 أو Ctrl + S).
- * 5. من القائمة المنسدلة بالأعلى اختر دالة: initAllSheets ثم اضغط Run (تشغيل)
- *    (سيقوم فوراً بإنشاء وتنسيق وتلوين كل التبويبات الثلاثة وتعبئتها بالبيانات الكاملة!).
- * 6. اضغط زر «نشر» (Deploy) الأزرق في أعلى اليمين -> «نشر جديد» (New deployment).
- *    - نوع النشر: Web app (تطبيق ويب).
- *    - تنفيذ كـ: Me (أنا).
- *    - من يملك حق الوصول: Anyone (أي شخص).
- * 7. انسخ رابط تطبيق الويب (Web app URL الذي ينتهي بـ /exec) وأرسله هنا لربطه فوراً.
+ * 3. امسح أي كود قديم والصق هذا الكود بالكامل.
+ * 4. احفظ (Ctrl + S).
+ * 5. من قائمة الدوال اختر initAllSheets واضغط Run (للجديد) — أو consolidateSheets
+ *    لنقل البيانات الموجودة من التابات القديمة إلى التابين الجديدين.
+ * 6. Deploy -> New deployment -> Web app -> Execute as: Me -> Who has access: Anyone
+ * 7. انسخ رابط /exec وحطه في الموقع (config.json -> googleBookingsWebhookUrl).
  * =========================================================================
  */
 
 const TAB_USERS = 'المستخدمين';
-const TAB_SCHEDULE = 'المواعيد الثابتة';
-const TAB_BOOKINGS = 'المواعيد';
+const TAB_MAIN = 'الجدول';
+const TAB_DATA = 'البيانات';
 
-/**
- * إضافة قائمة مخصصة في شريط أدوات Google Sheet لتسهيل إدارة الموقع
- */
+// معرف الجدول المستهدف — يخلي السكريبت يشتغل على الجدول الصح
+// حتى لو اتعمل Deploy من مشروع Apps Script مش مرتبط بالجدول مباشرة
+const SHEET_ID = '1cms7RitJ9I7rY5HaJxTsWgeyPLYKCbOVOZQ1WscEIjk';
+
+function getSS() {
+  if (SHEET_ID) return SpreadsheetApp.openById(SHEET_ID);
+  return SpreadsheetApp.getActiveSpreadsheet();
+}
+
+const MARK_SCHEDULE = '##SCHEDULE##';
+const MARK_BOOKINGS = '##BOOKINGS##';
+const MARK_CAL = '##CAL##';
+const MARK_CAL2026 = '##CAL2026##'; // legacy — للقراءة من النسخ القديمة
+const MARK_CAL2027 = '##CAL2027##'; // legacy
+const MARK_DATA = '##DATA##';
+
+const MAIN_COLS = 40; // sufficiently wide for the 2027 calendar (~26 cols) plus schedule/booking sections
+
+const HEADERS_SCHEDULE = [
+  'م', 'الموسم', 'اليوم', 'النوع', 'اسم الخدمة / النشاط', 'المرحلة / الفئة',
+  'المكان', 'من', 'إلى', 'المسؤول / الخادم', 'رقم الموبايل', 'ملاحظات'
+];
+
+const HEADERS_BOOKINGS = [
+  'رقم الطلب', 'اسم الخدمة / الاجتماع', 'المكان', 'التاريخ', 'اليوم', 'من', 'إلى',
+  'التكرار', 'نهاية التكرار', 'اسم مقدم الطلب', 'رقم الموبايل', 'اسم المستخدم',
+  'ملاحظات', 'الحالة', 'تاريخ الطلب', 'تاريخ القرار', 'اسم المسؤول'
+];
+
+const DAYS_AR = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+
+// =========================================================================
+// القائمة المخصصة
+// =========================================================================
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('☦ كنيسة الأنبا أنطونيوس ☦')
-    .addItem('✨ تهيئة وتنسيق كل التبويبات بالبيانات الافتراضية', 'initAllSheets')
-    .addItem('📤 رفع المواعيد الثابتة الافتراضية (40 ميعاد)', 'seedFixedSchedule')
-    .addItem('👥 تهيئة تبويب المستخدمين الافتراضيين', 'seedUsers')
+    .addItem('✨ تهيئة التابين (مستخدمين + جدول)', 'initAllSheets')
+    .addItem('📥 نقل البيانات من التابات القديمة إلى «الجدول»', 'consolidateSheets')
+    .addItem('👥 تهيئة مستخدمي افتراضيين', 'seedUsers')
     .addToUi();
 }
 
-/**
- * تهيئة كافة التبويبات الثلاثة بضغطة زر واحدة
- */
 function initAllSheets() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSS();
   getOrCreateUsersSheet(ss);
-  getOrCreateFixedScheduleSheet(ss);
-  getOrCreateBookingsSheet(ss);
+  const main = getOrCreateMainSheet(ss);
+  const data = readMainData(main);
+  const hasLegacy = !!(ss.getSheetByName('Schedule') || ss.getSheetByName('المواعيد الثابتة') || ss.getSheetByName('المواعيد') || ss.getSheetByName('2026') || ss.getSheetByName('2027'));
+  if (!hasLegacy && data.schedule.length === 0 && data.bookings.length === 0) {
+    data.schedule = defaultScheduleItems();
+    renderMainSheet(main, data);
+  }
 }
 
 // =========================================================================
-// 1) تبويب «المستخدمين» (حسابات الأدمن والخدام)
+// 1) تاب «المستخدمين»
 // =========================================================================
 function getOrCreateUsersSheet(ss) {
   ss = ss || SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(TAB_USERS);
-  if (!sheet) {
-    sheet = ss.insertSheet(TAB_USERS);
-  }
+  if (!sheet) sheet = ss.insertSheet(TAB_USERS);
   initUsersSheet(sheet);
   return sheet;
 }
 
 function initUsersSheet(sheet) {
   try { sheet.setRightToLeft(true); } catch (e) {}
-
-  const headers = [
-    'username',       // 1: اسم المستخدم (للإنجليزي بدون مسافات)
-    'password',       // 2: كلمة المرور
-    'display_name',   // 3: الاسم المعروض للخدام والموقع
-    'level',          // 4: المستوى (1 = مدير عام كامل، 2 = خادم لطلب ميعاد)
-    'active',         // 5: مفعل (1 = مفعل، 0 = معطل)
-    'phone',          // 6: رقم الموبايل
-    'notes'           // 7: ملاحظات والصلاحيات
-  ];
-
+  const headers = ['username', 'password', 'display_name', 'level', 'active', 'phone', 'notes'];
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   const headerRange = sheet.getRange(1, 1, 1, headers.length);
-  headerRange.setBackground('#0f172a'); // كحلي غامق فخم
+  headerRange.setBackground('#0f172a');
   headerRange.setFontColor('#ffffff');
   headerRange.setFontWeight('bold');
   headerRange.setHorizontalAlignment('center');
-  headerRange.setVerticalAlignment('middle');
-  sheet.setRowHeight(1, 38);
   sheet.setFrozenRows(1);
 
-  // قائمة منسدلة للمستوى (1: مدير عام، 2: خادم)
   const levelRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['1', '2'], true)
-    .setAllowInvalid(true).build();
+    .requireValueInList(['1', '2'], true).setAllowInvalid(true).build();
   sheet.getRange('D2:D500').setDataValidation(levelRule);
-  sheet.getRange('D2:D500').setHorizontalAlignment('center');
-
-  // قائمة منسدلة للحالة (1: مفعل، 0: معطل)
   const activeRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['1', '0'], true)
-    .setAllowInvalid(true).build();
+    .requireValueInList(['1', '0'], true).setAllowInvalid(true).build();
   sheet.getRange('E2:E500').setDataValidation(activeRule);
-  sheet.getRange('E2:E500').setHorizontalAlignment('center');
 
-  // تنسيق شرطي للمستوى: 1 بنفسجي فاتح، 2 أزرق سماوي
-  const rules = sheet.getConditionalFormatRules();
-  rules.push(SpreadsheetApp.newConditionalFormatRule()
-    .whenTextEqualTo('1').setBackground('#f3e8ff').setFontColor('#6b21a8')
-    .setRanges([sheet.getRange('D2:D500')]).build());
-  rules.push(SpreadsheetApp.newConditionalFormatRule()
-    .whenTextEqualTo('2').setBackground('#e0f2fe').setFontColor('#0369a1')
-    .setRanges([sheet.getRange('D2:D500')]).build());
-  sheet.setConditionalFormatRules(rules);
-
-  // إضافة المستخدمين الافتراضيين لو كان التبويب فارغاً
-  if (sheet.getLastRow() < 2) {
-    seedUsers(sheet);
-  }
-
+  if (sheet.getLastRow() < 2) seedUsers(sheet);
   for (let c = 1; c <= headers.length; c++) sheet.autoResizeColumn(c);
 }
 
@@ -124,352 +121,10 @@ function seedUsers(sheet) {
     ['Mina.Fekry', 'mina123', 'مينا فكري', '1', '1', '01280800693', 'مدير النظام (أدمن مستوى 1 - تحكم كامل)'],
     ['maria', 'maria', 'maria', '2', '1', '01280800693', 'خادم ومسؤول حجز (مستوى 2 - طلب ميعاد)']
   ];
-  if (sheet.getLastRow() > 1) {
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).clearContent();
-  }
+  if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).clearContent();
   sheet.getRange(2, 1, defaultUsers.length, 7).setValues(defaultUsers);
 }
 
-// =========================================================================
-// 2) تبويب «المواعيد الثابتة» (القداسات والاجتماعات ومدارس الأحد)
-// =========================================================================
-function getOrCreateFixedScheduleSheet(ss) {
-  ss = ss || SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(TAB_SCHEDULE);
-  if (!sheet) {
-    sheet = ss.insertSheet(TAB_SCHEDULE);
-  }
-  initFixedScheduleSheet(sheet);
-  return sheet;
-}
-
-function initFixedScheduleSheet(sheet) {
-  try { sheet.setRightToLeft(true); } catch (e) {}
-
-  const headers = [
-    'م',                   // 1
-    'الموسم',              // 2
-    'اليوم',               // 3
-    'النوع',               // 4
-    'اسم الخدمة / النشاط',   // 5
-    'المرحلة / الفئة',      // 6
-    'المكان',              // 7
-    'من',                 // 8
-    'إلى',                // 9
-    'المسؤول / الخادم',     // 10
-    'رقم الموبايل',         // 11
-    'ملاحظات'             // 12
-  ];
-
-  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-  const headerRange = sheet.getRange(1, 1, 1, headers.length);
-  headerRange.setBackground('#7f1d1d'); // عنابي كنسي وقور
-  headerRange.setFontColor('#ffffff');
-  headerRange.setFontWeight('bold');
-  headerRange.setHorizontalAlignment('center');
-  headerRange.setVerticalAlignment('middle');
-  sheet.setRowHeight(1, 38);
-  sheet.setFrozenRows(1);
-
-  // قوائم منسدلة
-  const daysRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'], true)
-    .setAllowInvalid(true).build();
-  sheet.getRange('C2:C2000').setDataValidation(daysRule);
-
-  const typesRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['صلوات طقسية', 'تربية كنسية', 'إجتماع'], true)
-    .setAllowInvalid(true).build();
-  sheet.getRange('D2:D2000').setDataValidation(typesRule);
-
-  const placesRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList([
-      'كنيسة الأنبا أنطونيوس',
-      'كنيسة الأنبا إبرآم (قاعة المناسبات)',
-      'كنيسة السيدة العذراء',
-      'كنيسة الملاك ميخائيل',
-      'مبني الخدمات – الدور الرابع والخامس',
-      'مبني الخدمات – الدور السابع والثامن',
-      'مبني الخدمات – الدور التاسع'
-    ], true)
-    .setAllowInvalid(true).build();
-  sheet.getRange('G2:G2000').setDataValidation(placesRule);
-
-  sheet.getRange('A2:A2000').setHorizontalAlignment('center');
-  sheet.getRange('B2:D2000').setHorizontalAlignment('center');
-  sheet.getRange('H2:I2000').setHorizontalAlignment('center');
-
-  // رفع المواعيد الـ 40 لو كان التبويب فارغاً
-  if (sheet.getLastRow() < 2) {
-    seedFixedSchedule(sheet);
-  }
-
-  for (let c = 1; c <= headers.length; c++) sheet.autoResizeColumn(c);
-}
-
-function seedFixedSchedule(sheet) {
-  sheet = sheet || getOrCreateFixedScheduleSheet();
-  const scheduleData = [
-    ["#10","الأيام السنوية","الأحد","صلوات طقسية","القداس الإلهي الأول","","كنيسة الأنبا أنطونيوس","6:00 ص","8:30 ص","","",""],
-    ["#11","الأيام السنوية","الأحد","صلوات طقسية","القداس الإلهي الثاني","","كنيسة الأنبا أنطونيوس","8:00 ص","10:30 ص","","",""],
-    ["#12","الأيام السنوية","الأحد","إجتماع","إجتماع الكشافة","كشافة ثانوي","كنيسة الأنبا إبرآم (قاعة المناسبات)","6:30 م","9:30 م","أ/ مينا كمال","01208008341",""],
-    ["#13","الأيام السنوية","الأحد","إجتماع","إجتماع الكشافة","كشافة جامعة وخريجين","مبني الخدمات – الدور التاسع","6:30 م","9:30 م","أ/ مينا حماده","01278017062",""],
-    ["#14","الأيام السنوية","الإثنين","صلوات طقسية","القداس الإلهي","","كنيسة الأنبا إبرآم (قاعة المناسبات)","6:00 ص","8:00 ص","","",""],
-    ["#15","الأيام السنوية","الإثنين","إجتماع","إجتماع خدام وخادمات المرضى","","كنيسة السيدة العذراء","6:30 م","8:30 م","أ/ أمير منير + م/ إيمان حنا","",""],
-    ["#16","الأيام السنوية","الإثنين","إجتماع","إجتماع الصلاة ودرس الكتاب المقدس","","كنيسة الأنبا أنطونيوس","7:00 م","9:00 م","القمص/ اغناطيوس إيليا","",""],
-    ["#17","الأيام السنوية","الثلاثاء","صلوات طقسية","القداس الإلهي","","كنيسة الأنبا إبرآم (قاعة المناسبات)","6:00 ص","8:00 ص","","",""],
-    ["#18","الأيام السنوية","الثلاثاء","تربية كنسية","إجتماع إعداد خدام (سنة أولى + سنة ثانية)","إعداد خدام","كنيسة الأنبا أنطونيوس","6:30 م","8:30 م","أ/ عادل إسحق","01001220974",""],
-    ["#19","الأيام السنوية","الأربعاء","صلوات طقسية","القداس الإلهي","","كنيسة الأنبا أنطونيوس","7:00 ص","9:00 ص","","",""],
-    ["#20","الأيام السنوية","الأربعاء","إجتماع","كورال – إجتماع الشباب الجامعي","","كنيسة الأنبا أنطونيوس","6:30 م","8:30 م","أ/ مينا فايز","01009390268",""],
-    ["#21","الأيام السنوية","الأربعاء","إجتماع","إجتماع إعداد خدام (كبار)","إعداد خدام كبار","كنيسة السيدة العذراء","7:00 م","9:00 م","القس/ اقلاديوس عريان","",""],
-    ["#22","الأيام السنوية","الخميس","صلوات طقسية","القداس الإلهي","","كنيسة الأنبا أنطونيوس","6:00 ص","8:30 ص","","",""],
-    ["#23","الأيام السنوية","الخميس","صلوات طقسية","رفع بخور عشية","","كنيسة الأنبا أنطونيوس","6:00 م","6:30 م","","",""],
-    ["#28","الأيام السنوية","الخميس","إجتماع","حصة ألحان شمامسة (كبار)","شمامسة","كنيسة السيدة العذراء","6:00 م","8:00 م","المعلم/ ثابت نجيب","01277879798",""],
-    ["#24","الأيام السنوية","الخميس","تربية كنسية","إجتماع إعداد خدام (سنة أولى)","إعداد خدام","كنيسة الأنبا أنطونيوس","6:30 م","8:30 م","أ/ إبراهيم نعيم","01271125213",""],
-    ["#25","الأيام السنوية","الخميس","تربية كنسية","إجتماع إعداد خدام (سنة ثانية)","إعداد خدام","كنيسة الملاك ميخائيل","6:30 م","8:30 م","أ/ رفيق لويس","01272023537",""],
-    ["#26","الأيام السنوية","الخميس","تربية كنسية","إجتماع الخريجين","","كنيسة الأنبا إبرآم (قاعة المناسبات)","7:00 م","9:00 م","أ/ أنسي نعمان","01279987972",""],
-    ["#27","الأيام السنوية","الخميس","إجتماع","إجتماع درس الكتاب المقدس العام","","كنيسة الأنبا أنطونيوس","7:00 م","8:30 م","القس/ ميخائيل إبراهيم","",""],
-    ["#29","الأيام السنوية","الجمعة","صلوات طقسية","القداس الإلهي الأول","","كنيسة الأنبا أنطونيوس","6:30 ص","8:30 ص","","",""],
-    ["#30","الأيام السنوية","الجمعة","صلوات طقسية","القداس الإلهي الثاني","","كنيسة الملاك ميخائيل","7:00 ص","9:00 ص","","",""],
-    ["#31","الأيام السنوية","الجمعة","صلوات طقسية","القداس الإلهي الثالث","","كنيسة الأنبا أنطونيوس","8:30 ص","10:30 ص","","",""],
-    ["#32","الأيام السنوية","الجمعة","تربية كنسية","قطاع حضانة","حضانة","كنيسة الأنبا أنطونيوس","9:00 ص","10:00 ص","تريزا منير","01202868884",""],
-    ["#33","الأيام السنوية","الجمعة","تربية كنسية","قطاع أولى وثانية إبتدائي","أولى وثانية إبتدائي","كنيسة الأنبا أنطونيوس","10:00 ص","11:00 ص","م/ شيري فوزي","01273512065",""],
-    ["#34","الأيام السنوية","الجمعة","تربية كنسية","قطاع ثالثة ورابعة إبتدائي","ثالثة ورابعة إبتدائي","كنيسة الأنبا أنطونيوس","10:00 ص","11:00 ص","م/ إبتسام يسري","01226346505",""],
-    ["#35","الأيام السنوية","الجمعة","تربية كنسية","قطاع خامسة وسادسة إبتدائي","خامسة وسادسة إبتدائي","كنيسة الأنبا أنطونيوس","11:00 ص","1:00 م","م/ إبتسام يسري","01226346505",""],
-    ["#36","الأيام السنوية","الجمعة","تربية كنسية","قطاع إعدادي بنين","إعدادي بنين","كنيسة الملاك ميخائيل","11:00 ص","1:00 م","أ/ عماد عادل","01202344225",""],
-    ["#37","الأيام السنوية","الجمعة","تربية كنسية","قطاع إعدادي بنات","إعدادي بنات","كنيسة الأنبا إبرآم (قاعة المناسبات)","11:00 ص","1:00 م","م/ داليا فؤاد","01284674689",""],
-    ["#38","الأيام السنوية","الجمعة","إجتماع","إجتماع الكشافة","كشافة إعدادي","مبني الخدمات – الدور الرابع والخامس","2:30 م","5:00 م","أ/ چورچ وجيه","01274177176",""],
-    ["#39","الأيام السنوية","الجمعة","تربية كنسية","إجتماع الشباب الجامعي","","كنيسة الأنبا أنطونيوس","7:00 م","9:00 م","أ/ چورچ عادل","01000879642",""],
-    ["#40","الأيام السنوية","الجمعة","تربية كنسية","إجتماع الخريجين","","كنيسة الأنبا إبرآم (قاعة المناسبات)","7:00 م","9:00 م","أ/ أنسي نعمان","01279987972",""],
-    ["#1","الأيام السنوية","السبت","صلوات طقسية","القداس الإلهي الأول","","كنيسة الأنبا أنطونيوس","6:00 ص","8:00 ص","","",""],
-    ["#2","الأيام السنوية","السبت","صلوات طقسية","القداس الإلهي الثاني (ثانوي)","","كنيسة الأنبا أنطونيوس","8:30 ص","10:30 ص","","",""],
-    ["#3","الأيام السنوية","السبت","تربية كنسية","إجتماع ثانوي بنين","ثانوي بنين","كنيسة الأنبا إبرآم (قاعة المناسبات)","11:30 ص","1:30 م","أ/ مينا سمير","01273726770",""],
-    ["#4","الأيام السنوية","السبت","تربية كنسية","إجتماع ثانوي بنات","ثانوي بنات","كنيسة الأنبا أنطونيوس","11:30 ص","1:30 م","م/ مريم برتي","01005652802",""],
-    ["#5","الأيام السنوية","السبت","صلوات طقسية","رفع بخور عشية","","كنيسة الأنبا أنطونيوس","6:00 م","6:30 م","","",""],
-    ["#6","الأيام السنوية","السبت","تربية كنسية","مدرسة الكتاب المقدس – إبتدائي كبير","رابعة وخامسة وسادسة إبتدائي","مبني الخدمات – الدور الرابع والخامس","6:30 م","8:00 م","م/ إبتسام يسري","01226346505",""],
-    ["#7","الأيام السنوية","السبت","إجتماع","إجتماع الأسرة العام","","كنيسة الأنبا أنطونيوس","6:30 م","8:30 م","القمص/ هارون رزق","","",""],
-    ["#8","الأيام السنوية","السبت","إجتماع","إجتماع درس الكتاب المقدس","إعدادي بنين + بنات","كنيسة السيدة العذراء","6:30 م","7:30 م","القس/ اقلاديوس عريان","","",""],
-    ["#9","الأيام السنوية","السبت","صلوات طقسية","تسبحة نصف الليل","","كنيسة السيدة العذراء","7:30 م","9:00 م","المعلم/ ثابت نجيب","01277879798",""]
-  ];
-
-  if (sheet.getLastRow() > 1) {
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, 12).clearContent();
-  }
-  sheet.getRange(2, 1, scheduleData.length, 12).setValues(scheduleData);
-}
-
-// =========================================================================
-// 3) تبويب «المواعيد» (الحجوزات والخدمات الاستثنائية)
-// =========================================================================
-function getOrCreateBookingsSheet(ss) {
-  ss = ss || SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(TAB_BOOKINGS);
-  if (!sheet) {
-    sheet = ss.insertSheet(TAB_BOOKINGS);
-  }
-  initBookingsSheet(sheet);
-  return sheet;
-}
-
-function initBookingsSheet(sheet) {
-  try { sheet.setRightToLeft(true); } catch (e) {}
-
-  const headers = [
-    'رقم الطلب',            // 1
-    'اسم الخدمة / الاجتماع',  // 2
-    'المكان',              // 3
-    'التاريخ',             // 4
-    'اليوم',               // 5
-    'من',                 // 6
-    'إلى',                // 7
-    'التكرار',             // 8
-    'نهاية التكرار',        // 9
-    'اسم مقدم الطلب',       // 10
-    'رقم الموبايل',         // 11
-    'اسم المستخدم',        // 12
-    'ملاحظات',            // 13
-    'الحالة',              // 14: معلق / مقبول / مرفوض
-    'تاريخ الطلب',         // 15
-    'تاريخ القرار',        // 16
-    'اسم المسؤول'          // 17
-  ];
-
-  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-  const headerRange = sheet.getRange(1, 1, 1, headers.length);
-  headerRange.setBackground('#1e3a8a'); // كحلي ملكي
-  headerRange.setFontColor('#ffffff');
-  headerRange.setFontWeight('bold');
-  headerRange.setHorizontalAlignment('center');
-  headerRange.setVerticalAlignment('middle');
-  sheet.setRowHeight(1, 38);
-  sheet.setFrozenRows(1);
-
-  const statusRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['معلق', 'مقبول', 'مرفوض'], true)
-    .setAllowInvalid(true)
-    .build();
-  sheet.getRange('N2:N2000').setDataValidation(statusRule);
-  sheet.getRange('N2:N2000').setHorizontalAlignment('center');
-  sheet.getRange('A2:A2000').setHorizontalAlignment('center');
-  sheet.getRange('D2:G2000').setHorizontalAlignment('center');
-
-  const rules = sheet.getConditionalFormatRules();
-  rules.push(SpreadsheetApp.newConditionalFormatRule()
-    .whenTextEqualTo('مقبول').setBackground('#dcfce7').setFontColor('#166534')
-    .setRanges([sheet.getRange('N2:N2000')]).build());
-  rules.push(SpreadsheetApp.newConditionalFormatRule()
-    .whenTextEqualTo('معلق').setBackground('#fef3c7').setFontColor('#92400e')
-    .setRanges([sheet.getRange('N2:N2000')]).build());
-  rules.push(SpreadsheetApp.newConditionalFormatRule()
-    .whenTextEqualTo('مرفوض').setBackground('#fee2e2').setFontColor('#991b1b')
-    .setRanges([sheet.getRange('N2:N2000')]).build());
-  sheet.setConditionalFormatRules(rules);
-
-  for (let c = 1; c <= headers.length; c++) sheet.autoResizeColumn(c);
-}
-
-// =========================================================================
-// 4) معالجة طلبات POST الواردة من الموقع
-// =========================================================================
-function doPost(e) {
-  try {
-    const raw = e && e.postData ? e.postData.contents : '';
-    let data = {};
-    if (raw) {
-      try { data = JSON.parse(raw); } catch (err) { data = { error: 'invalid json' }; }
-    }
-    const action = data.action || '';
-
-    // تهيئة شاملة
-    if (action === 'initAllSheets') {
-      initAllSheets();
-      return replyJson({ ok: true, message: 'All sheets initialized successfully' });
-    }
-
-    // ---------- طلبات الحجز (المواعيد) ----------
-    if (action === 'createBooking' || action === 'add') {
-      const sheet = getOrCreateBookingsSheet();
-      const b = data.booking || {};
-      const res = addOrUpdateBookingRow(sheet, b);
-      return replyJson({ ok: true, action: 'created', row: res, bookingId: b.id });
-    }
-
-    if (action === 'updateBookingStatus' || action === 'setStatus') {
-      const sheet = getOrCreateBookingsSheet();
-      const id = data.id;
-      const st = data.status_ar || (data.status === 'approved' ? 'مقبول' : data.status === 'rejected' ? 'مرفوض' : data.status === 'deleted' ? 'محذوف' : 'معلق');
-      if (st === 'محذوف' || data.status === 'deleted') {
-        const delRes = deleteBookingRow(sheet, id);
-        return replyJson({ ok: delRes, action: 'deleted', id: id });
-      }
-      const isPending = st === 'معلق' || data.status === 'pending';
-      const decidedAt = isPending ? '' : (data.decided_at || new Date().toLocaleString('ar-EG'));
-      const decidedBy = isPending ? '' : (data.decided_by || '');
-      const updated = setBookingRowStatus(sheet, id, st, decidedAt, decidedBy);
-      return replyJson({ ok: updated, action: 'status_updated', id: id, status: st });
-    }
-
-    if (action === 'editBooking') {
-      const sheet = getOrCreateBookingsSheet();
-      const b = data.booking || {};
-      const res = addOrUpdateBookingRow(sheet, b);
-      return replyJson({ ok: true, action: 'edited', row: res });
-    }
-
-    if (action === 'deleteBooking') {
-      const sheet = getOrCreateBookingsSheet();
-      const res = deleteBookingRow(sheet, data.id);
-      return replyJson({ ok: res, action: 'deleted', id: data.id });
-    }
-
-    if (action === 'bulkPush') {
-      const sheet = getOrCreateBookingsSheet();
-      const list = data.bookings || [];
-      for (let i = 0; i < list.length; i++) addOrUpdateBookingRow(sheet, list[i]);
-      return replyJson({ ok: true, action: 'bulkPush', count: list.length });
-    }
-
-    // ---------- المواعيد الثابتة ----------
-    if (action === 'pushAllSchedule') {
-      const sheet = getOrCreateFixedScheduleSheet();
-      const list = data.schedule || [];
-      bulkReplaceFixedSchedule(sheet, list);
-      return replyJson({ ok: true, action: 'pushAllSchedule', count: list.length });
-    }
-
-    if (action === 'createScheduleEntry' || action === 'addSchedule') {
-      const sheet = getOrCreateFixedScheduleSheet();
-      const res = addOrUpdateScheduleRow(sheet, data.entry || {});
-      return replyJson({ ok: true, action: 'schedule_created', row: res });
-    }
-
-    if (action === 'editScheduleEntry' || action === 'updateSchedule') {
-      const sheet = getOrCreateFixedScheduleSheet();
-      const res = addOrUpdateScheduleRow(sheet, data.entry || {});
-      return replyJson({ ok: true, action: 'schedule_updated', row: res });
-    }
-
-    if (action === 'deleteScheduleEntry') {
-      const sheet = getOrCreateFixedScheduleSheet();
-      const res = deleteScheduleRow(sheet, data.id);
-      return replyJson({ ok: res, action: 'schedule_deleted', id: data.id });
-    }
-
-    // ---------- المستخدمين ----------
-    if (action === 'pushAllUsers') {
-      const sheet = getOrCreateUsersSheet();
-      const list = data.users || [];
-      if (list.length) {
-        if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).clearContent();
-        const rows = list.map(u => [
-          u.username, u.password, u.display_name, String(u.level || 2), String(u.active ? 1 : 0), u.phone || '', u.notes || ''
-        ]);
-        sheet.getRange(2, 1, rows.length, 7).setValues(rows);
-      }
-      return replyJson({ ok: true, action: 'pushAllUsers', count: list.length });
-    }
-
-    return replyJson({ ok: false, error: 'Unknown action: ' + action });
-  } catch (err) {
-    return replyJson({ ok: false, error: err.toString() });
-  }
-}
-
-// =========================================================================
-// 5) معالجة طلبات GET (لجلب المستخدمين والمواعيد والحجوزات)
-// =========================================================================
-function doGet(e) {
-  try {
-    const usersSheet = getOrCreateUsersSheet();
-    const scheduleSheet = getOrCreateFixedScheduleSheet();
-    const bookingsSheet = getOrCreateBookingsSheet();
-
-    const users = getAllUsers(usersSheet);
-    const schedule = getAllFixedSchedule(scheduleSheet);
-    const bookings = getAllBookings(bookingsSheet);
-
-    return replyJson({
-      ok: true,
-      users: users,
-      schedule: schedule,
-      bookings: bookings,
-      totalUsers: users.length,
-      totalSchedule: schedule.length,
-      totalBookings: bookings.length
-    });
-  } catch (err) {
-    return replyJson({ ok: false, error: err.toString() });
-  }
-}
-
-function replyJson(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-
-// =========================================================================
-// دوال مساعدة لتبويب «المستخدمين»
-// =========================================================================
 function getAllUsers(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
@@ -480,7 +135,7 @@ function getAllUsers(sheet) {
     const username = String(r[0] || '').trim();
     if (!username) continue;
     list.push({
-      username: username,
+      username,
       password: String(r[1] || ''),
       display_name: String(r[2] || username).trim(),
       level: Number(r[3]) || 2,
@@ -493,32 +148,169 @@ function getAllUsers(sheet) {
 }
 
 // =========================================================================
-// دوال مساعدة لتبويب «المواعيد»
+// 2) تاب «الجدول» — كل بيانات المواعيد في مكان واحد
 // =========================================================================
-function findBookingRowById(sheet, id) {
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return -1;
-  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-  const searchId = String(id).replace('#', '').trim();
-  for (let i = 0; i < ids.length; i++) {
-    const cellId = String(ids[i][0]).replace('#', '').trim();
-    if (cellId === searchId) return i + 2;
+function getOrCreateMainSheet(ss) {
+  ss = ss || SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(TAB_MAIN);
+  if (!sheet) sheet = ss.insertSheet(TAB_MAIN);
+  try { sheet.setRightToLeft(true); } catch (e) {}
+  return sheet;
+}
+
+// تاب البيانات — مخفي تماماً (الموقع بيستخدمه بس، مش بيظهر في قايمة الشيت)
+function getOrCreateDataSheet(ss) {
+  ss = ss || SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(TAB_DATA);
+  if (!sheet) sheet = ss.insertSheet(TAB_DATA);
+  try { sheet.setRightToLeft(true); } catch (e) {}
+  try { sheet.hideSheet(); } catch (e) {}
+  return sheet;
+}
+
+function padRow(row) {
+  const out = new Array(MAIN_COLS).fill('');
+  for (let i = 0; i < MAIN_COLS && i < (row ? row.length : 0); i++) out[i] = row[i];
+  return out;
+}
+
+// حدود للقراءة — لو التاب فيه صفوف زيادة (تنسيق/محتوى قديم) منقرأش ملايين الخلايا
+const MAX_SCAN_ROWS = 5000;
+const MAX_SECTION_ROWS = 1200;
+
+function findMarkerRow(sheet, marker) {
+  const last = Math.min(sheet.getLastRow(), MAX_SCAN_ROWS);
+  if (last < 1) return -1;
+  const col = sheet.getRange(1, 1, last, 1).getValues();
+  for (let i = 0; i < col.length; i++) {
+    if (String(col[i][0] || '').trim() === marker) return i + 1;
   }
   return -1;
 }
 
-function addOrUpdateBookingRow(sheet, b) {
-  const rowIdx = findBookingRowById(sheet, b.id);
-  const rowValues = [
+// يقرأ صفوف قسم معين: من صف الهيدر+1 حتى قبل الماركر التالي
+function readSectionDataRows(sheet, marker) {
+  const markerRow = findMarkerRow(sheet, marker);
+  if (markerRow < 0) return { found: false, rows: [] };
+  const last = sheet.getLastRow();
+  // نهاية القسم = أول ماركر بعده
+  let endRow = last;
+  const allMarkers = [MARK_SCHEDULE, MARK_BOOKINGS, MARK_CAL, MARK_CAL2026, MARK_CAL2027];
+  for (const m of allMarkers) {
+    if (m === marker) continue;
+    const mr = findMarkerRow(sheet, m);
+    if (mr > markerRow && mr - 1 < endRow) endRow = mr - 1;
+  }
+  if (endRow > markerRow + MAX_SECTION_ROWS) endRow = markerRow + MAX_SECTION_ROWS;
+  const startRow = markerRow + 2; // تخطي صف الهيدر
+  if (startRow > endRow) return { found: true, rows: [] };
+  const raw = sheet.getRange(startRow, 1, endRow - startRow + 1, MAIN_COLS).getValues();
+  // حذف الصفوف الفاضية في الآخر
+  while (raw.length && raw[raw.length - 1].every(c => String(c).trim() === '')) raw.pop();
+  return { found: true, rows: raw };
+}
+
+// يقرأ الصفوف الخام لقسم التقويم (بدون تخطي الهيدر — التقويم مفيهوش هيدر)
+function readCalendarSectionRows(sheet, marker) {
+  const markerRow = findMarkerRow(sheet, marker);
+  if (markerRow < 0) return { found: false, rows: [] };
+  const last = sheet.getLastRow();
+  let endRow = last;
+  const allMarkers = [MARK_SCHEDULE, MARK_BOOKINGS, MARK_CAL, MARK_CAL2026, MARK_CAL2027];
+  for (const m of allMarkers) {
+    if (m === marker) continue;
+    const mr = findMarkerRow(sheet, m);
+    if (mr > markerRow && mr - 1 < endRow) endRow = mr - 1;
+  }
+  if (endRow > markerRow + MAX_SECTION_ROWS) endRow = markerRow + MAX_SECTION_ROWS;
+  const startRow = markerRow + 1; // أول صف بعد الماركر مباشرة
+  if (startRow > endRow) return { found: true, rows: [] };
+  const raw = sheet.getRange(startRow, 1, endRow - startRow + 1, MAIN_COLS).getValues();
+  while (raw.length && raw[raw.length - 1].every(c => String(c).trim() === '')) raw.pop();
+  return { found: true, rows: raw };
+}
+
+function scheduleFromRow(r) {
+  const rawId = String(r[0] || '').replace('#', '').trim();
+  return {
+    id: rawId,
+    season_name: String(r[1] || '').trim() || 'الأيام السنوية',
+    day_name: String(r[2] || '').trim(),
+    type: String(r[3] || '').trim(),
+    name: String(r[4] || '').trim(),
+    segment: String(r[5] || '').trim(),
+    place_name: String(r[6] || '').trim(),
+    start: String(r[7] || '').trim(),
+    end: String(r[8] || '').trim(),
+    responsible: String(r[9] || '').trim(),
+    phone: String(r[10] || '').trim(),
+    notes: String(r[11] || '').trim()
+  };
+}
+
+function scheduleToRow(item) {
+  return [
+    item.id ? String(item.id).replace('#', '') : '',
+    item.season_name || 'الأيام السنوية',
+    item.day_name || 'الأحد',
+    item.type || 'صلوات طقسية',
+    item.name || '',
+    item.segment || '',
+    item.place_name || '',
+    item.start || '',
+    item.end || '',
+    item.responsible || '',
+    item.phone || '',
+    item.notes || ''
+  ];
+}
+
+// بيحوّل قيمة تاريخ من الشيت (Date object أو نص أو ISO) لصيغة YYYY-MM-DD ثابتة
+function toDateKey(v) {
+  if (v === null || v === undefined || v === '') return '';
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    try { return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd'); } catch (e) {}
+  }
+  const s = String(v).trim();
+  const m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return m[1] + '-' + pad2(Number(m[2])) + '-' + pad2(Number(m[3]));
+  return s;
+}
+
+function bookingFromRow(r) {
+  const rawId = String(r[0] || '').replace('#', '').trim();
+  return {
+    id: rawId ? (Number(rawId) || rawId) : '',
+    service_name: r[1],
+    place_name: r[2],
+    date: toDateKey(r[3]),
+    day: r[4],
+    start: r[5],
+    end: r[6],
+    repeat: r[7],
+    repeat_end: toDateKey(r[8]),
+    requester_name: r[9],
+    requester_phone: r[10],
+    requester_username: r[11],
+    notes: r[12],
+    status: r[13],
+    created_at: r[14],
+    decided_at: r[15],
+    decided_by: r[16]
+  };
+}
+
+function bookingToRow(b) {
+  return [
     b.id ? `#${b.id}` : '',
     b.service_name || '',
     b.place_name || '',
-    b.date || '',
+    toDateKey(b.date) || '',
     b.day || '',
     b.start || '',
     b.end || '',
     b.repeat || 'فردي',
-    b.repeat_end || '',
+    toDateKey(b.repeat_end) || '',
     b.requester_name || '',
     b.requester_phone || '',
     b.requester_username || '',
@@ -528,159 +320,812 @@ function addOrUpdateBookingRow(sheet, b) {
     b.decided_at || '',
     b.decided_by || ''
   ];
+}
 
-  if (rowIdx > 0) {
-    sheet.getRange(rowIdx, 1, 1, rowValues.length).setValues([rowValues]);
-    return rowIdx;
+// بيفصل صفوف قسم ##CAL## المدمج إلى سنتين حسب صف فاصل فيه السنة (2026 / 2027)
+function splitCalendarYears(rows) {
+  const out = { 2026: [], 2027: [] };
+  let cur = 2026;
+  (rows || []).forEach(r => {
+    const a = String(r[0] || '').trim();
+    const ym = a.match(/^(20\d{2})/);
+    // صف فاصل = خلية أولى فيها السنة ولوحدها تقريباً وباقي الصف فاضي
+    const restEmpty = r.slice(1).every(c => String(c).trim() === '');
+    if (ym && restEmpty && a.length <= 12) {
+      const y = Number(ym[1]);
+      if (y === 2026 || y === 2027) { cur = y; return; }
+    }
+    if (cur === 2026) out[2026].push(r); else out[2027].push(r);
+  });
+  return out;
+}
+
+// بيقرأ الأقسام المنظمة — من تاب «البيانات» لو موجود، وإلا من «الجدول» (الشكل القديم)
+function readMainData(sheet) {
+  const ss = sheet.getParent();
+  const dataSheet = ss ? ss.getSheetByName(TAB_DATA) : null;
+  const src = (dataSheet && findMarkerRow(dataSheet, MARK_SCHEDULE) > 0) ? dataSheet : sheet;
+  const sched = readSectionDataRows(src, MARK_SCHEDULE);
+  const book = readSectionDataRows(src, MARK_BOOKINGS);
+  const calSec = readCalendarSectionRows(src, MARK_CAL);
+  let cal2026 = [], cal2027 = [];
+  if (calSec.found) {
+    const parts = splitCalendarYears(calSec.rows);
+    cal2026 = parts[2026];
+    cal2027 = parts[2027];
   } else {
-    sheet.appendRow(rowValues);
-    return sheet.getLastRow();
+    // fallback للشكل القديم بقسمين منفصلين
+    cal2026 = readCalendarSectionRows(src, MARK_CAL2026).rows;
+    cal2027 = readCalendarSectionRows(src, MARK_CAL2027).rows;
   }
+  return {
+    schedule: sched.rows.map(scheduleFromRow).filter(s => s.name),
+    bookings: book.rows.map(bookingFromRow).filter(b => b.id !== '' && b.id !== undefined),
+    cal2026: cal2026,
+    cal2027: cal2027
+  };
 }
 
-function setBookingRowStatus(sheet, id, statusAr, decidedAt, decidedBy) {
-  const rowIdx = findBookingRowById(sheet, id);
-  if (rowIdx < 0) return false;
-  sheet.getRange(rowIdx, 14).setValue(statusAr);
-  if (decidedAt !== undefined) sheet.getRange(rowIdx, 16).setValue(decidedAt);
-  if (decidedBy !== undefined) sheet.getRange(rowIdx, 17).setValue(decidedBy);
-  return true;
+// =========================================================================
+// التقويم اليومي: كل صف = تاريخ، وجواه كل اللي هيحصل في اليوم
+// =========================================================================
+const VIEW_COLS = 5;
+const DAY_VIEW_HEADERS = ['التاريخ', 'اليوم', 'المواعيد الثابتة (تتكرر أسبوعياً)', 'الحجوزات', 'الأعياد / الصوام / فعاليات التقويم'];
+
+function dayNameToIndex(name) {
+  const n = String(name || '').trim();
+  const map = {
+    'الأحد': 0, 'الاحد': 0, 'أحد': 0, 'حد': 0,
+    'الإثنين': 1, 'الاثنين': 1, 'إثنين': 1, 'اثنين': 1, 'تنين': 1,
+    'الثلاثاء': 2, 'ثلاثاء': 2,
+    'الأربعاء': 3, 'اربعاء': 3, 'أربعاء': 3,
+    'الخميس': 4, 'خميس': 4,
+    'الجمعة': 5, 'جمعة': 5,
+    'السبت': 6, 'سبت': 6
+  };
+  if (map[n] !== undefined) return map[n];
+  const i = DAYS_AR.indexOf(n);
+  return i >= 0 ? i : -1;
 }
 
-function deleteBookingRow(sheet, id) {
-  const rowIdx = findBookingRowById(sheet, id);
-  if (rowIdx < 0) return false;
-  sheet.deleteRow(rowIdx);
-  return true;
+function pad2(n) { return String(n).padStart(2, '0'); }
+function fmtDateKey(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+
+function expandBookingDates(b) {
+  const out = [];
+  const startStr = String(b.date || '').trim();
+  if (!startStr) return out;
+  const m = startStr.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (!m) return out;
+  const s = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const rep = String(b.repeat || '');
+  const isWeekly = rep.indexOf('أسبوع') >= 0 || rep.toLowerCase() === 'weekly';
+  let limit = new Date(2027, 11, 31);
+  const em = String(b.repeat_end || '').match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (em) limit = new Date(Number(em[1]), Number(em[2]) - 1, Number(em[3]));
+  const d = new Date(s);
+  let guard = 0;
+  while (d <= limit && guard++ < 500) {
+    out.push(fmtDateKey(d));
+    if (!isWeekly) break;
+    d.setDate(d.getDate() + 7);
+  }
+  return out;
 }
 
-function getAllBookings(sheet) {
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return [];
-  const data = sheet.getRange(2, 1, lastRow - 1, 17).getValues();
-  const list = [];
-  for (let i = 0; i < data.length; i++) {
-    const r = data[i];
-    const rawId = String(r[0]).replace('#', '').trim();
-    if (!rawId) continue;
-    list.push({
-      id: Number(rawId) || rawId,
-      service_name: r[1],
-      place_name: r[2],
-      date: r[3],
-      day: r[4],
-      start: r[5],
-      end: r[6],
-      repeat: r[7],
-      repeat_end: r[8],
-      requester_name: r[9],
-      requester_phone: r[10],
-      requester_username: r[11],
-      notes: r[12],
-      status: r[13],
-      created_at: r[14],
-      decided_at: r[15],
-      decided_by: r[16]
+function collectCalendarEvents(rows, year) {
+  const events = [];
+  if (!rows || !rows.length) return events;
+  let monthCols = [];
+  let startRow = 1;
+  for (let i = 0; i < Math.min(10, rows.length); i++) {
+    const r = rows[i] || [];
+    const found = [];
+    for (let c = 0; c < r.length; c++) {
+      const mi = AR_MONTHS_LIST.indexOf(String(r[c] || '').trim());
+      if (mi >= 0) found.push({ col: c, monthNum: mi + 1 });
+    }
+    if (found.length) { monthCols = found; startRow = i + 1; break; }
+  }
+  if (!monthCols.length) return events;
+  for (let r = startRow; r < rows.length; r++) {
+    const row = rows[r] || [];
+    for (const mc of monthCols) {
+      const dayNum = Number(row[mc.col]);
+      const ev = row[mc.col + 1];
+      if (!ev || String(ev).trim() === '' || isNaN(dayNum) || dayNum <= 0) continue;
+      const dateStr = year + '-' + pad2(mc.monthNum) + '-' + pad2(dayNum);
+      const rawText = String(ev).trim();
+      rawText.split('\n').map(l => l.replace(/^[-•*]\s*/, '').trim()).filter(Boolean)
+        .forEach(t => events.push({ date: dateStr, text: t }));
+    }
+  }
+  return events;
+}
+
+const AR_MONTHS_LIST = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+
+const VIEW_PLACES = [
+  'كنيسة الأنبا أنطونيوس',
+  'كنيسة الأنبا إبرآم (قاعة المناسبات)',
+  'كنيسة السيدة العذراء',
+  'كنيسة الملاك ميخائيل',
+  'مبني الخدمات – الدور الرابع والخامس',
+  'مبني الخدمات – الدور السابع والثامن',
+  'مبني الخدمات – الدور التاسع'
+];
+const VIEW_OTHER = 'أخرى / بدون مكان';
+
+function normalizePlaceName(name) {
+  const n = String(name || '').trim();
+  if (!n) return VIEW_OTHER;
+  for (const p of VIEW_PLACES) {
+    if (n === p || n.indexOf(p) >= 0 || p.indexOf(n) >= 0) return p;
+  }
+  return VIEW_OTHER;
+}
+
+function buildDayViewRows(data) {
+  // كل عنصر: { time, name, place, kind } — الوقت والاسم في عمودين منفصلين
+  const fixedByDay = {};
+  (data.schedule || []).forEach(s => {
+    const d = dayNameToIndex(s.day_name);
+    if (d < 0 || !s.name) return;
+    const time = s.start && s.end ? (s.start + ' - ' + s.end) : (s.start || s.end || '');
+    (fixedByDay[d] = fixedByDay[d] || []).push({ time, name: s.name, place: normalizePlaceName(s.place_name), kind: 'fixed' });
+  });
+
+  const bookByDate = {};
+  let maxBookKey = '';
+  (data.bookings || []).forEach(b => {
+    const status = String(b.status || 'معلق');
+    const st = status.indexOf('مرفوض') >= 0 ? 'مرفوض' : (status.indexOf('مقبول') >= 0 ? 'مقبول' : 'معلق');
+    const kind = st === 'مرفوض' ? 'rej' : (st === 'مقبول' ? 'appr' : 'pend');
+    const time = b.start && b.end ? (b.start + ' - ' + b.end) : (b.start || b.end || '');
+    const name = [(b.service_name || 'حجز'), '(' + status + ')', b.requester_name || ''].filter(Boolean).join(' | ');
+    const place = normalizePlaceName(b.place_name);
+    expandBookingDates(b).forEach(dt => {
+      if (dt > maxBookKey) maxBookKey = dt;
+      (bookByDate[dt] = bookByDate[dt] || []).push({ time, name, place, kind });
     });
+  });
+
+  const calByDate = {};
+  // عمود الأعياد/الصوام: نظهر بس الفعاليات الدينية الحقيقية — مش الخدمات والحجوزات المتكررة
+  const FEAST_RE = /عيد|أعياد|صوم|صيام|آلام|قيامة|ميلاد|غطاس|نسيم|أسبوع|بشارة|تجلي|فصح|خميس|سبت النور/i;
+  const pushFeast = e => { if (FEAST_RE.test(e.text)) (calByDate[e.date] = calByDate[e.date] || []).push(e.text); };
+  collectCalendarEvents(data.cal2026, 2026).forEach(pushFeast);
+  collectCalendarEvents(data.cal2027, 2027).forEach(pushFeast);
+
+  const allPlaces = VIEW_PLACES.concat([VIEW_OTHER]);
+  const rows = [];
+  const d = new Date(2026, 0, 1);
+  let end = new Date(2027, 11, 31);
+  // مدّ العرض لأي تاريخ حجز بعد 2027 عشان كل حجز يظهر في يومه
+  if (maxBookKey > '2027-12-31') {
+    const em = maxBookKey.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (em) end = new Date(Number(em[1]), Number(em[2]) - 1, Number(em[3]));
   }
-  return list;
+  while (d <= end) {
+    const key = fmtDateKey(d);
+    const wd = d.getDay();
+    const dayItems = (fixedByDay[wd] || []).concat(bookByDate[key] || []);
+    const calText = (calByDate[key] || []).join('\n');
+    // كل موعد ثابت وكل حجز/معاد له صف مستقل — كل واحد بلونه وحالته
+    const byPlace = {};
+    dayItems.forEach(it => {
+      (byPlace[it.place] = byPlace[it.place] || []).push(it);
+    });
+    let wrote = false;
+    let firstRowOfDay = true;
+    for (const p of allPlaces) {
+      const items = byPlace[p];
+      if (!items || !items.length) continue;
+      wrote = true;
+      const fixedItems = items.filter(it => it.kind === 'fixed');
+      const bookItems = items.filter(it => it.kind !== 'fixed');
+      // كل موعد ثابت وكل حجز/معاد: صف مستقل — المكان والوقت والاسم في نفس الصف
+      fixedItems.forEach(f => {
+        rows.push({ c: [key, DAYS_AR[wd], p, f.time, f.name, firstRowOfDay ? calText : ''], k: 'fixed' });
+        firstRowOfDay = false;
+      });
+      bookItems.forEach(b => {
+        rows.push({ c: [key, DAYS_AR[wd], p, b.time, b.name, firstRowOfDay ? calText : ''], k: b.kind });
+        firstRowOfDay = false;
+      });
+    }
+    if (!wrote) rows.push({ c: [key, DAYS_AR[wd], '—', '', '', calText], k: 'empty' });
+    d.setDate(d.getDate() + 1);
+  }
+  return { rows };
 }
 
-// =========================================================================
-// دوال مساعدة لتبويب «المواعيد الثابتة»
-// =========================================================================
-function findScheduleRowById(sheet, id) {
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return -1;
-  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-  const searchId = String(id).replace('#', '').trim();
-  for (let i = 0; i < ids.length; i++) {
-    const cellId = String(ids[i][0]).replace('#', '').trim();
-    if (cellId === searchId) return i + 2;
-  }
-  return -1;
+function padTo(row, n) {
+  const out = new Array(n).fill('');
+  for (let i = 0; i < n && i < (row ? row.length : 0); i++) out[i] = row[i];
+  return out;
 }
 
-function addOrUpdateScheduleRow(sheet, item) {
-  const rowIdx = item.id ? findScheduleRowById(sheet, item.id) : -1;
-  const rowValues = [
-    item.id ? `#${item.id}` : '',
-    item.season_name || 'الأيام السنوية',
-    item.day_name || 'الأحد',
-    item.type || 'صلوات طقسية',
-    item.name || '',
-    item.segment || '',
-    item.place_name || '',
-    item.start || '',
-    item.end || '',
-    item.responsible || '',
-    item.phone || '',
-    item.notes || ''
+const SCRIPT_BUILD = '2026-11-19-D';
+var MERGE_ERRORS = [];
+function renderMainSheet(sheet, data, opts) {
+  opts = opts || {};
+  const doFormat = opts.format !== false;
+  const view = buildDayViewRows(data);
+  const dayRows = view.rows;
+  const viewCols = 6;
+  const viewHeaders = ['التاريخ', 'اليوم', 'المكان', 'الوقت', 'الاسم / الحجز', 'الأعياد / الصوام / فعاليات التقويم'];
+
+  // ===== الجزء المرئي: التقويم اليومي (صف لكل مكان في كل يوم) =====
+  const viewOut = [
+    ['📅 جدول المواعيد اليومي — كل يوم وكل مكان وكل اللي فيه'],
+    viewHeaders
   ];
+  dayRows.forEach(r => viewOut.push(padTo(r.c || r, viewCols)));
 
-  if (rowIdx > 0) {
-    sheet.getRange(rowIdx, 1, 1, rowValues.length).setValues([rowValues]);
-    return rowIdx;
-  } else {
-    sheet.appendRow(rowValues);
-    return sheet.getLastRow();
+  // ===== بيانات الجهاز (بتتقري وتتكيتَب من الويب سايت) — في تاب «البيانات» =====
+  const dataOut = [];
+  dataOut.push([MARK_SCHEDULE]);
+  dataOut.push(HEADERS_SCHEDULE);
+  const schedHeaderIdx = dataOut.length; // رقم الهيدر جوه dataOut (1-based)
+  (data.schedule || []).forEach(it => dataOut.push(scheduleToRow(it)));
+  dataOut.push([]);
+
+  dataOut.push([MARK_BOOKINGS]);
+  dataOut.push(HEADERS_BOOKINGS);
+  const bookHeaderIdx = dataOut.length;
+  (data.bookings || []).forEach(b => dataOut.push(bookingToRow(b)));
+  dataOut.push([]);
+
+  dataOut.push([MARK_CAL]);
+  dataOut.push(['2026']);
+  (data.cal2026 || []).forEach(r => dataOut.push(padRow(r)));
+  dataOut.push([]);
+  dataOut.push(['2027']);
+  (data.cal2027 || []).forEach(r => dataOut.push(padRow(r)));
+
+  sheet.clearContents();
+  // «الجدول» = التقويم اليومي بس — كتابة على دفعتين عشان منستهلكش ذاكرة زيادة
+  sheet.getRange(1, 1, viewOut.length, viewCols).setValues(viewOut.map(r => padTo(r, viewCols)));
+
+  // «البيانات» = الأقسام المنظمة
+  const ss = sheet.getParent();
+  const dataSheet = getOrCreateDataSheet(ss);
+  dataSheet.clearContents();
+  dataSheet.getRange(1, 1, dataOut.length, MAIN_COLS).setValues(dataOut.map(padRow));
+  try { dataSheet.hideSheet(); } catch (e) {}
+
+  if (!doFormat) return { viewRows: viewOut.length, dataRows: dataOut.length };
+
+  // تنسيقminimal للتقويم اليومي — بدون merge أو حدود تقيلة
+  sheet.getRange(1, 1, 1, viewCols).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold').setHorizontalAlignment('center');
+  sheet.getRange(2, 1, 1, viewCols).setBackground('#0f172a').setFontColor('#ffffff').setFontWeight('bold');
+  sheet.getRange(3, 1, Math.max(0, dayRows.length), 1).setNumberFormat('@');
+
+  // دمج عمودي: التاريخ واليوم يظهروا مرة واحدة لكل يوم — باقي الأعمدة صف لكل موعد/حجز
+  try {
+    // فك أي دمج قديم الأول — clearContents مش بيمسح الـ merges فبتتراكم وتبوّظ الدمج الجديد
+    sheet.getRange(3, 1, Math.max(dayRows.length + 10, sheet.getMaxRows() - 2), viewCols).breakApart();
+    // امسح كل الحدود القديمة — clearContents مش بيمسحها فبتتراكم وتظهر خطوط بين كل الصفوف
+    sheet.getRange(3, 1, Math.max(dayRows.length + 10, sheet.getMaxRows() - 2), viewCols).setBorder(false, false, false, false, false, false, null, null);
+    let segStart = 0, segKey = null;
+    for (let i = 0; i <= dayRows.length; i++) {
+      const key = i < dayRows.length ? (dayRows[i].c ? dayRows[i].c[0] : dayRows[i][0]) : null;
+      if (key === segKey) continue;
+      if (segKey !== null && i - segStart > 1) {
+        try {
+          sheet.getRange(3 + segStart, 1, i - segStart, 1).merge();
+          sheet.getRange(3 + segStart, 2, i - segStart, 1).merge();
+          sheet.getRange(3 + segStart, 1, i - segStart, 2).setVerticalAlignment('middle');
+          // خلفية خلية التاريخ/اليوم المدمجة = لون أول صف في اليوم (عشان متظهرش بيضا)
+          const k0 = dayRows[segStart] && dayRows[segStart].k;
+          const bgMap = { fixed: '#dbeafe', pending: '#fef9c3', approved: '#dcfce7', rejected: '#fee2e2', empty: '#e2e8f0' };
+          sheet.getRange(3 + segStart, 1, i - segStart, 2).setBackground(bgMap[k0] || '#f1f5f9');
+        } catch (e2) { if (MERGE_ERRORS.length < 8) MERGE_ERRORS.push(segKey + ': ' + e2); }
+      }
+      // فاصل سميك تحت آخر صف في كل يوم
+      if (segKey !== null) {
+        try {
+          sheet.getRange(3 + i - 1, 1, 1, viewCols).setBorder(null, null, true, null, null, null, '#475569', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+        } catch (e3) { /* ignore */ }
+      }
+      segStart = i; segKey = key;
+    }
+  } catch (e) { /* الدمج مش حرج */ }
+
+  // تلوين الصفوف بـ Conditional Formatting — بيشتغل أوتوماتيك ومن غير استهلاك وقت في كل توليد
+  try {
+    const lastRow = Math.max(sheet.getMaxRows() - 2, dayRows.length + 10);
+    const cfRange = [sheet.getRange(3, 1, lastRow, viewCols)];
+    const D = '$E3'; // عمود الاسم/الحجز (فيه الحالة)
+    const cfRules = [
+      ['=REGEXMATCH(' + D + ',"مرفوض|rejected")', '#fee2e2'],
+      ['=REGEXMATCH(' + D + ',"معلق|pending")', '#fef9c3'],
+      ['=REGEXMATCH(' + D + ',"مقبول|approved")', '#dcfce7'],
+      ['=$C3="—"', '#e2e8f0'],
+      ['=AND($C3<>"",$C3<>"—",$D3="",$E3="",$F3="")', '#e0e7ff'],
+      ['=OR($D3<>"",$E3<>"")', '#dbeafe']
+    ].map(r => SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(r[0]).setBackground(r[1]).setRanges(cfRange).build());
+    sheet.setConditionalFormatRules(cfRules);
+  } catch (e) { /* CF مش حرج */ }
+  sheet.setFrozenRows(2);
+  sheet.setColumnWidth(1, 105);
+  sheet.setColumnWidth(2, 80);
+  sheet.setColumnWidth(3, 260);
+  sheet.setColumnWidth(4, 130);
+  sheet.setColumnWidth(5, 340);
+  sheet.setColumnWidth(6, 260);
+
+  // تنسيق بسيط لأقسام البيانات (على تاب «البيانات» — الصف = نفس الترتيب في dataOut)
+  const markerStyle = (rowIdx, color) => {
+    dataSheet.getRange(rowIdx, 1, 1, MAIN_COLS).setBackground(color).setFontColor('#ffffff').setFontWeight('bold');
+  };
+  markerStyle(schedHeaderIdx - 1, '#7f1d1d');
+  markerStyle(bookHeaderIdx - 1, '#1e3a8a');
+  dataSheet.getRange(schedHeaderIdx, 1, 1, HEADERS_SCHEDULE.length).setBackground('#7f1d1d').setFontColor('#ffffff').setFontWeight('bold');
+  dataSheet.getRange(bookHeaderIdx, 1, 1, HEADERS_BOOKINGS.length).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
+  return { viewRows: viewOut.length, dataRows: dataOut.length, mergeErrors: MERGE_ERRORS.splice(0, MERGE_ERRORS.length) };
+}
+
+// =========================================================================
+// الدمج: نقل البيانات من التابات القديمة إلى التابين النهائيين
+// =========================================================================
+function archiveSheet(ss, sheet) {
+  if (!sheet) return;
+  const protectedNames = [TAB_USERS, TAB_MAIN, TAB_DATA];
+  if (protectedNames.includes(sheet.getName())) return;
+  let newName = 'أرشيف_' + sheet.getName();
+  let i = 2;
+  while (ss.getSheetByName(newName)) { newName = 'أرشيف_' + sheet.getName() + '_' + i; i++; }
+  sheet.setName(newName);
+}
+
+function parseLegacyScheduleSheet(sheet) {
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  // تنسيق التاب القديم: عمود A فاضي أحياناً أو اليوم في A — ندوّر على صف الهيدر الحقيقي
+  const scanRows = Math.min(last, 10);
+  const scan = sheet.getRange(1, 1, scanRows, 9).getValues();
+  let headerRow = -1;
+  let colOffset = 0;
+  for (let i = 0; i < scan.length; i++) {
+    const r = scan[i];
+    const texts = r.map(c => String(c || '').trim());
+    const idxDay = texts.findIndex(t => t === 'اليوم');
+    if (idxDay >= 0 && texts.some(t => t === 'الوقت' || t === 'نوع النشاط' || t === 'النشاط / الإجتماع')) {
+      headerRow = i + 1;
+      colOffset = idxDay;
+      break;
+    }
   }
-}
-
-function deleteScheduleRow(sheet, id) {
-  const rowIdx = findScheduleRowById(sheet, id);
-  if (rowIdx < 0) return false;
-  sheet.deleteRow(rowIdx);
-  return true;
-}
-
-function bulkReplaceFixedSchedule(sheet, list) {
-  const lastRow = sheet.getLastRow();
-  if (lastRow > 1) {
-    sheet.getRange(2, 1, lastRow - 1, 12).clearContent();
-  }
-  if (!list || !list.length) return;
-  const rows = list.map(item => [
-    item.id ? `#${item.id}` : '',
-    item.season_name || 'الأيام السنوية',
-    item.day_name || 'الأحد',
-    item.type || 'صلوات طقسية',
-    item.name || '',
-    item.segment || '',
-    item.place_name || '',
-    item.start || '',
-    item.end || '',
-    item.responsible || '',
-    item.phone || '',
-    item.notes || ''
-  ]);
-  sheet.getRange(2, 1, rows.length, 12).setValues(rows);
-  for (let c = 1; c <= 12; c++) sheet.autoResizeColumn(c);
-}
-
-function getAllFixedSchedule(sheet) {
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return [];
-  const data = sheet.getRange(2, 1, lastRow - 1, 12).getValues();
-  const list = [];
-  for (let i = 0; i < data.length; i++) {
-    const r = data[i];
-    const rawId = String(r[0]).replace('#', '').trim();
-    if (!rawId && !r[4]) continue;
-    list.push({
-      id: Number(rawId) || rawId,
-      season_name: r[1],
-      day_name: r[2],
-      type: r[3],
-      name: r[4],
-      segment: r[5],
-      place_name: r[6],
-      start: r[7],
-      end: r[8],
-      responsible: r[9],
-      phone: r[10],
-      notes: r[11]
+  if (headerRow < 0) { headerRow = 1; colOffset = 0; }
+  const numCols = 8 + colOffset;
+  const rows = sheet.getRange(headerRow + 1, 1, Math.max(0, last - headerRow), numCols).getValues();
+  let currentDay = '';
+  const items = [];
+  for (const r of rows) {
+    const day = String(r[colOffset] || '').trim();
+    if (day && DAYS_AR.includes(day)) currentDay = day;
+    const name = String(r[colOffset + 3] || '').trim();
+    if (!name) continue;
+    const time = String(r[colOffset + 1] || '').trim();
+    let start = '', end = '';
+    const parts = time.split(/[-–]/).map(s => s.trim());
+    if (parts.length >= 2) { start = parts[0]; end = parts.slice(1).join('-').trim(); }
+    else if (parts[0]) { start = parts[0]; }
+    items.push({
+      id: '', season_name: 'الأيام السنوية', day_name: currentDay || 'الأحد',
+      type: String(r[colOffset + 2] || '').trim(), name, segment: String(r[colOffset + 4] || '').trim(),
+      place_name: String(r[colOffset + 5] || '').trim(), start, end,
+      responsible: String(r[colOffset + 6] || '').trim(), phone: String(r[colOffset + 7] || '').trim(), notes: ''
     });
   }
-  return list;
+  items.forEach((it, i) => { it.id = String(i + 1); });
+  return items;
+}
+
+function parseScriptScheduleSheet(sheet) {
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  const rows = sheet.getRange(2, 1, last - 1, 12).getValues();
+  const items = [];
+  for (const r of rows) {
+    const it = scheduleFromRow(r);
+    if (it.name) items.push(it);
+  }
+  return items;
+}
+
+function consolidateSheets() {
+  const ss = getSS();
+  const usersSheet = getOrCreateUsersSheet(ss);
+  const main = getOrCreateMainSheet(ss);
+  const data = readMainData(main);
+  const summary = { usersTab: usersSheet.getName(), mainTab: main.getName(), migrated: [], archived: [] };
+
+  // استيراد المستخدمين من تاب «users» القديم لو موجود والتاب الجديد لسه فيه الافتراضيين بس
+  const legacyUsers = ss.getSheetByName('users');
+  if (legacyUsers && usersSheet.getLastRow() <= 3) {
+    const ur = legacyUsers.getLastRow();
+    if (ur > 1) {
+      const rows = legacyUsers.getRange(2, 1, ur - 1, 7).getValues()
+        .filter(r => String(r[0] || '').trim());
+      if (rows.length) {
+        usersSheet.getRange(2, 1, usersSheet.getLastRow() - 1, 7).clearContent();
+        usersSheet.getRange(2, 1, rows.length, 7).setValues(rows);
+        summary.migrated.push('users<-users (' + rows.length + ')');
+      }
+    }
+  }
+
+  const archiveIfExists = (name) => {
+    const sh = ss.getSheetByName(name);
+    if (sh && name !== TAB_USERS && name !== TAB_MAIN && name !== TAB_DATA) {
+      archiveSheet(ss, sh);
+      summary.archived.push(name);
+    }
+  };
+
+  // بيدور على التاب بالاسم أو بنسخته المؤرشفة «أرشيف_»
+  const findDataSheet = (...names) => {
+    for (const n of names) {
+      const s = ss.getSheetByName(n) || ss.getSheetByName('أرشيف_' + n);
+      if (s) return s;
+    }
+    return null;
+  };
+
+  // --- المواعيد الثابتة: نملأ القسم لو كان فاضي ---
+  if (data.schedule.length === 0) {
+    const legacy = findDataSheet('Schedule');
+    if (legacy) {
+      const items = parseLegacyScheduleSheet(legacy);
+      if (items.length) {
+        data.schedule = items;
+        summary.migrated.push('schedule<-Schedule (' + items.length + ')');
+      }
+    }
+    if (data.schedule.length === 0) {
+      const fixed = findDataSheet('المواعيد الثابتة');
+      if (fixed) {
+        const items = parseScriptScheduleSheet(fixed);
+        if (items.length) {
+          data.schedule = items;
+          summary.migrated.push('schedule<-المواعيد الثابتة (' + items.length + ')');
+        }
+      }
+    }
+  }
+
+  // --- المواعيد (الحجوزات) ---
+  if (data.bookings.length === 0) {
+    const bk = findDataSheet('المواعيد');
+    if (bk && bk.getLastRow() > 1) {
+      const rows = bk.getRange(2, 1, bk.getLastRow() - 1, 17).getValues();
+      data.bookings = rows.map(bookingFromRow).filter(b => b.id !== '' && b.id !== undefined);
+      if (data.bookings.length) summary.migrated.push('bookings<-المواعيد (' + data.bookings.length + ')');
+    }
+  }
+
+  // --- التقويم 2026 / 2027 ---
+  if (data.cal2026.length === 0) {
+    const cal = findDataSheet('2026');
+    if (cal) {
+      data.cal2026 = cal.getDataRange().getValues();
+      while (data.cal2026.length && data.cal2026[data.cal2026.length - 1].every(c => String(c).trim() === '')) data.cal2026.pop();
+      if (data.cal2026.length) summary.migrated.push('cal2026 (' + data.cal2026.length + ' rows)');
+    }
+  }
+  if (data.cal2027.length === 0) {
+    const cal = findDataSheet('2027');
+    if (cal) {
+      data.cal2027 = cal.getDataRange().getValues();
+      while (data.cal2027.length && data.cal2027[data.cal2027.length - 1].every(c => String(c).trim() === '')) data.cal2027.pop();
+      if (data.cal2027.length) summary.migrated.push('cal2027 (' + data.cal2027.length + ' rows)');
+    }
+  }
+
+  renderMainSheet(main, data);
+
+  // في الآخر: نخلي الشيت فيه التابين بس — أي تاب قديم يتسمّى «أرشيف_»
+  ['Schedule', 'المواعيد الثابتة', 'المواعيد', '2026', '2027', 'users'].forEach(archiveIfExists);
+
+  summary.scheduleCount = data.schedule.length;
+  summary.bookingCount = data.bookings.length;
+  summary.cal2026Rows = data.cal2026.length;
+  summary.cal2027Rows = data.cal2027.length;
+
+  try {
+    SpreadsheetApp.getUi().alert(
+      'تم الدمج بنجاح ✅\n\n' +
+      'المستخدمين: ' + summary.usersTab + '\n' +
+      'الجدول: ' + summary.mainTab + '\n' +
+      'مواعيد ثابتة: ' + summary.scheduleCount + '\n' +
+      'حجوزات: ' + summary.bookingCount + '\n' +
+      'تقويم 2026: ' + summary.cal2026Rows + ' صف\n' +
+      'تقويم 2027: ' + summary.cal2027Rows + ' صف\n\n' +
+      'التابات القديمة اتسمّت بـ «أرشيف_» ومش اتمسحت.'
+    );
+  } catch (e) { /* getUi مش متاح في سياق الويب آب — مش مشكلة */ }
+  return summary;
+}
+
+// =========================================================================
+// دوال داخلية: صفوف التقويم الافتراضية (فارغة — بتتملى من الدمج)
+// =========================================================================
+function defaultScheduleItems() {
+  // نفس بيانات التبويب Schedule الأصلية (40 ميعاد)
+  const raw = [
+    ['#1','الأيام السنوية','السبت','صلوات طقسية','القداس الإلهي الأول','','كنيسة الأنبا أنطونيوس','6:00 ص','8:00 ص','','',''],
+    ['#2','الأيام السنوية','السبت','صلوات طقسية','القداس الإلهي الثاني (ثانوي)','','كنيسة الأنبا أنطونيوس','8:30 ص','10:30 ص','','',''],
+    ['#3','الأيام السنوية','السبت','تربية كنسية','إجتماع ثانوي بنين','ثانوي بنين','كنيسة الأنبا إبرآم (قاعة المناسبات)','11:30 ص','1:30 م','أ/ مينا سمير','01273726770',''],
+    ['#4','الأيام السنوية','السبت','تربية كنسية','إجتماع ثانوي بنات','ثانوي بنات','كنيسة الأنبا أنطونيوس','11:30 ص','1:30 م','م/ مريم برتي','01005652802',''],
+    ['#5','الأيام السنوية','السبت','صلوات طقسية','رفع بخور عشية','','كنيسة الأنبا أنطونيوس','6:00 م','6:30 م','','',''],
+    ['#6','الأيام السنوية','السبت','تربية كنسية','مدرسة الكتاب المقدس – إبتدائي كبير','رابعة وخامسة وسادسة إبتدائي','مبني الخدمات – الدور الرابع والخامس','6:30 م','8:00 م','م/ إبتسام يسري','01226346505',''],
+    ['#7','الأيام السنوية','السبت','إجتماع','إجتماع الأسرة العام','','كنيسة الأنبا أنطونيوس','6:30 م','8:30 م','القمص/ هارون رزق','',''],
+    ['#8','الأيام السنوية','السبت','إجتماع','إجتماع درس الكتاب المقدس','إعدادي بنين + بنات','كنيسة السيدة العذراء','6:30 م','7:30 م','القس/ اقلاديوس عريان','',''],
+    ['#9','الأيام السنوية','السبت','صلوات طقسية','تسبحة نصف الليل','','كنيسة السيدة العذراء','7:30 م','9:00 م','المعلم/ ثابت نجيب','01277879798',''],
+    ['#10','الأيام السنوية','الأحد','صلوات طقسية','القداس الإلهي الأول','','كنيسة الأنبا أنطونيوس','6:00 ص','8:30 ص','','',''],
+    ['#11','الأيام السنوية','الأحد','صلوات طقسية','القداس الإلهي الثاني','','كنيسة الأنبا أنطونيوس','8:00 ص','10:30 ص','','',''],
+    ['#12','الأيام السنوية','الأحد','إجتماع','إجتماع الكشافة','كشافة ثانوي','كنيسة الأنبا إبرآم (قاعة المناسبات)','6:30 م','9:30 م','أ/ مينا كمال','01208008341',''],
+    ['#13','الأيام السنوية','الأحد','إجتماع','إجتماع الكشافة','كشافة جامعة وخريجين','مبني الخدمات – الدور التاسع','6:30 م','9:30 م','أ/ مينا حماده','01278017062',''],
+    ['#14','الأيام السنوية','الإثنين','صلوات طقسية','القداس الإلهي','','كنيسة الأنبا إبرآم (قاعة المناسبات)','6:00 ص','8:00 ص','','',''],
+    ['#15','الأيام السنوية','الإثنين','إجتماع','إجتماع خدام وخادمات المرضى','','كنيسة السيدة العذراء','6:30 م','8:30 م','أ/ أمير منير + م/ إيمان حنا','',''],
+    ['#16','الأيام السنوية','الإثنين','إجتماع','إجتماع الصلاة ودرس الكتاب المقدس','','كنيسة الأنبا أنطونيوس','7:00 م','9:00 م','القمص/ اغناطيوس إيليا','',''],
+    ['#17','الأيام السنوية','الثلاثاء','صلوات طقسية','القداس الإلهي','','كنيسة الأنبا إبرآم (قاعة المناسبات)','6:00 ص','8:00 ص','','',''],
+    ['#18','الأيام السنوية','الثلاثاء','تربية كنسية','إجتماع إعداد خدام (سنة أولى + سنة ثانية)','إعداد خدام','كنيسة الأنبا أنطونيوس','6:30 م','8:30 م','أ/ عادل إسحق','01001220974',''],
+    ['#19','الأيام السنوية','الأربعاء','صلوات طقسية','القداس الإلهي','','كنيسة الأنبا أنطونيوس','7:00 ص','9:00 ص','','',''],
+    ['#20','الأيام السنوية','الأربعاء','إجتماع','كورال – إجتماع الشباب الجامعي','','كنيسة الأنبا أنطونيوس','6:30 م','8:30 م','أ/ مينا فايز','01009390268',''],
+    ['#21','الأيام السنوية','الأربعاء','إجتماع','إجتماع إعداد خدام (كبار)','إعداد خدام كبار','كنيسة السيدة العذراء','7:00 م','9:00 م','القس/ اقلاديوس عريان','',''],
+    ['#22','الأيام السنوية','الخميس','صلوات طقسية','القداس الإلهي','','كنيسة الأنبا أنطونيوس','6:00 ص','8:30 ص','','',''],
+    ['#23','الأيام السنوية','الخميس','صلوات طقسية','رفع بخور عشية','','كنيسة الأنبا أنطونيوس','6:00 م','6:30 م','','',''],
+    ['#24','الأيام السنوية','الخميس','تربية كنسية','إجتماع إعداد خدام (سنة أولى)','إعداد خدام','كنيسة الأنبا أنطونيوس','6:30 م','8:30 م','أ/ إبراهيم نعيم','01271125213',''],
+    ['#25','الأيام السنوية','الخميس','تربية كنسية','إجتماع إعداد خدام (سنة ثانية)','إعداد خدام','كنيسة الملاك ميخائيل','6:30 م','8:30 م','أ/ رفيق لويس','01272023537',''],
+    ['#26','الأيام السنوية','الخميس','تربية كنسية','إجتماع الخريجين','','كنيسة الأنبا إبرآم (قاعة المناسبات)','7:00 م','9:00 م','أ/ أنسي نعمان','01279987972',''],
+    ['#27','الأيام السنوية','الخميس','إجتماع','إجتماع درس الكتاب المقدس العام','','كنيسة الأنبا أنطونيوس','7:00 م','8:30 م','القس/ ميخائيل إبراهيم','',''],
+    ['#28','الأيام السنوية','الخميس','إجتماع','حصة ألحان شمامسة (كبار)','شمامسة','كنيسة السيدة العذراء','6:00 م','8:00 م','المعلم/ ثابت نجيب','01277879798',''],
+    ['#29','الأيام السنوية','الجمعة','صلوات طقسية','القداس الإلهي الأول','','كنيسة الأنبا أنطونيوس','6:30 ص','8:30 ص','','',''],
+    ['#30','الأيام السنوية','الجمعة','صلوات طقسية','القداس الإلهي الثاني','','كنيسة الملاك ميخائيل','7:00 ص','9:00 ص','','',''],
+    ['#31','الأيام السنوية','الجمعة','صلوات طقسية','القداس الإلهي الثالث','','كنيسة الأنبا أنطونيوس','8:30 ص','10:30 ص','','',''],
+    ['#32','الأيام السنوية','الجمعة','تربية كنسية','قطاع حضانة','حضانة','كنيسة الأنبا أنطونيوس','9:00 ص','10:00 ص','تريزا منير','01202868884',''],
+    ['#33','الأيام السنوية','الجمعة','تربية كنسية','قطاع أولى وثانية إبتدائي','أولى وثانية إبتدائي','كنيسة الأنبا أنطونيوس','10:00 ص','11:00 ص','م/ شيري فوزي','01273512065',''],
+    ['#34','الأيام السنوية','الجمعة','تربية كنسية','قطاع ثالثة ورابعة إبتدائي','ثالثة ورابعة إبتدائي','كنيسة الأنبا أنطونيوس','10:00 ص','11:00 ص','م/ إبتسام يسري','01226346505',''],
+    ['#35','الأيام السنوية','الجمعة','تربية كنسية','قطاع خامسة وسادسة إبتدائي','خامسة وسادسة إبتدائي','كنيسة الأنبا أنطونيوس','11:00 ص','1:00 م','م/ إبتسام يسري','01226346505',''],
+    ['#36','الأيام السنوية','الجمعة','تربية كنسية','قطاع إعدادي بنين','إعدادي بنين','كنيسة الملاك ميخائيل','11:00 ص','1:00 م','أ/ عماد عادل','01202344225',''],
+    ['#37','الأيام السنوية','الجمعة','تربية كنسية','قطاع إعدادي بنات','إعدادي بنات','كنيسة الأنبا إبرآم (قاعة المناسبات)','11:00 ص','1:00 م','م/ داليا فؤاد','01284674689',''],
+    ['#38','الأيام السنوية','الجمعة','إجتماع','إجتماع الكشافة','كشافة إعدادي','مبني الخدمات – الدور الرابع والخامس','2:30 م','5:00 م','أ/ چورچ وجيه','01274177176',''],
+    ['#39','الأيام السنوية','الجمعة','تربية كنسية','إجتماع الشباب الجامعي','','كنيسة الأنبا أنطونيوس','7:00 م','9:00 م','أ/ چورچ عادل','01000879642',''],
+    ['#40','الأيام السنوية','الجمعة','تربية كنسية','إجتماع الخريجين','','كنيسة الأنبا إبرآم (قاعة المناسبات)','7:00 م','9:00 م','أ/ أنسي نعمان','01279987972','']
+  ];
+  return raw.map(r => scheduleFromRow(r));
+}
+
+// =========================================================================
+// 3) doPost — طلبات الكتابة من الموقع
+// =========================================================================
+function doPost(e) {
+  // قفلscript — يمنع تنفيذين متزامنين يقرأوا/يكتبوا الشيت في نفس الوقت ويفسدوا البيانات
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(110000); } catch (err) { return replyJson({ ok: false, error: 'server busy, retry' }); }
+  try { return doPostInner(e); } finally { try { lock.releaseLock(); } catch (_) {} }
+}
+
+function doPostInner(e) {
+  try {
+    const raw = e && e.postData ? e.postData.contents : '';
+    let data = {};
+    if (raw) {
+      try { data = JSON.parse(raw); } catch (err) { data = { error: 'invalid json' }; }
+    }
+    const action = data.action || '';
+    const ss = getSS();
+
+    if (action === 'initAllSheets') {
+      initAllSheets();
+      return replyJson({ ok: true, message: 'All sheets initialized' });
+    }
+    if (action === 'consolidateSheets') {
+      const summary = consolidateSheets();
+      return replyJson({ ok: true, summary });
+    }
+    if (action === 'rebuildMain') {
+      const main = getOrCreateMainSheet(ss);
+      const d = readMainData(main);
+      const rr = renderMainSheet(main, d);
+      return replyJson({ ok: true, rebuilt: true, build: SCRIPT_BUILD, schedule: d.schedule.length, bookings: d.bookings.length, mergeErrors: (rr && rr.mergeErrors) || [] });
+    }
+    if (action === 'stageBuild') {
+      const main = getOrCreateMainSheet(ss);
+      const d = readMainData(main);
+      const v = buildDayViewRows(d);
+      return replyJson({ ok: true, dayRows: v.rows.length, sched: d.schedule.length, book: d.bookings.length, c26: d.cal2026.length, c27: d.cal2027.length });
+    }
+    if (action === 'stageClear') {
+      const main = getOrCreateMainSheet(ss);
+      main.clearContents();
+      const ds = ss.getSheetByName(TAB_DATA);
+      if (ds) ds.clearContents();
+      return replyJson({ ok: true, cleared: true });
+    }
+    if (action === 'stageWrite') {
+      const main = getOrCreateMainSheet(ss);
+      const d = readMainData(main);
+      const r = renderMainSheet(main, d, { format: false });
+      return replyJson({ ok: true, written: r });
+    }
+    if (action === 'whoami') {
+      return replyJson({ ok: true, code: 'rows-per-place-v3', sheetId: SHEET_ID });
+    }
+    if (action === 'probeSheet') {
+      const info = { sheets: [] };
+      ss.getSheets().forEach(s => {
+        info.sheets.push({ name: s.getName(), lastRow: s.getLastRow(), maxRows: s.getMaxRows(), maxCols: s.getMaxColumns() });
+      });
+      return replyJson({ ok: true, info });
+    }
+
+    const usersSheet = getOrCreateUsersSheet(ss);
+    const main = getOrCreateMainSheet(ss);
+    const mainData = readMainData(main);
+
+    // ---------- المستخدمين ----------
+    if (action === 'pushAllUsers') {
+      const list = data.users || [];
+      if (list.length) {
+        if (usersSheet.getLastRow() > 1) usersSheet.getRange(2, 1, usersSheet.getLastRow() - 1, 7).clearContent();
+        const rows = list.map(u => [
+          u.username, u.password, u.display_name, String(u.level || 2),
+          String(u.active ? 1 : 0), u.phone || '', u.notes || ''
+        ]);
+        usersSheet.getRange(2, 1, rows.length, 7).setValues(rows);
+      }
+      return replyJson({ ok: true, action: 'pushAllUsers', count: list.length });
+    }
+
+    // ---------- المواعيد (الحجوزات) ----------
+    if (action === 'createBooking' || action === 'add') {
+      const b = bookingFromPayload(data.booking || {});
+      upsertById(mainData.bookings, b, bookingKey);
+      renderMainSheet(main, mainData);
+      return replyJson({ ok: true, action: 'created', bookingId: b.id });
+    }
+    if (action === 'updateBookingStatus' || action === 'setStatus') {
+      const id = String(data.id).replace('#', '').trim();
+      const st = data.status_ar || (data.status === 'approved' ? 'مقبول' : data.status === 'rejected' ? 'مرفوض' : data.status === 'deleted' ? 'محذوف' : 'معلق');
+      if (st === 'محذوف' || data.status === 'deleted') {
+        mainData.bookings = mainData.bookings.filter(b => String(b.id) !== id);
+        renderMainSheet(main, mainData);
+        return replyJson({ ok: true, action: 'deleted', id });
+      }
+      const isPending = st === 'معلق' || data.status === 'pending';
+      const b = mainData.bookings.find(x => String(x.id) === id);
+      if (b) {
+        b.status = st;
+        b.decided_at = isPending ? '' : (data.decided_at || new Date().toLocaleString('ar-EG'));
+        b.decided_by = isPending ? '' : (data.decided_by || '');
+        renderMainSheet(main, mainData);
+        return replyJson({ ok: true, action: 'status_updated', id, status: st });
+      }
+      return replyJson({ ok: false, error: 'booking not found: ' + id });
+    }
+    if (action === 'editBooking') {
+      const b = bookingFromPayload(data.booking || {});
+      upsertById(mainData.bookings, b, bookingKey);
+      renderMainSheet(main, mainData);
+      return replyJson({ ok: true, action: 'edited', bookingId: b.id });
+    }
+    if (action === 'deleteBooking') {
+      const id = String(data.id).replace('#', '').trim();
+      mainData.bookings = mainData.bookings.filter(b => String(b.id) !== id);
+      renderMainSheet(main, mainData);
+      return replyJson({ ok: true, action: 'deleted', id });
+    }
+    if (action === 'bulkPush') {
+      mainData.bookings = (data.bookings || []).map(bookingFromPayload);
+      renderMainSheet(main, mainData);
+      return replyJson({ ok: true, action: 'bulkPush', count: mainData.bookings.length });
+    }
+
+    // ---------- المواعيد الثابتة ----------
+    if (action === 'pushAllSchedule') {
+      mainData.schedule = (data.schedule || []).map(scheduleFromPayload);
+      renderMainSheet(main, mainData);
+      return replyJson({ ok: true, action: 'pushAllSchedule', count: mainData.schedule.length });
+    }
+    if (action === 'createScheduleEntry' || action === 'addSchedule' || action === 'editScheduleEntry' || action === 'updateSchedule') {
+      const item = scheduleFromPayload(data.entry || {});
+      upsertById(mainData.schedule, item, scheduleKey);
+      renderMainSheet(main, mainData);
+      return replyJson({ ok: true, action: 'schedule_saved', id: item.id });
+    }
+    if (action === 'deleteScheduleEntry') {
+      const id = String(data.id).replace('#', '').trim();
+      mainData.schedule = mainData.schedule.filter(s => String(s.id) !== id);
+      renderMainSheet(main, mainData);
+      return replyJson({ ok: true, action: 'schedule_deleted', id });
+    }
+
+    return replyJson({ ok: false, error: 'Unknown action: ' + action });
+  } catch (err) {
+    return replyJson({ ok: false, error: err.toString() });
+  }
+}
+
+function bookingKey(b) { return String(b.id).replace('#', '').trim(); }
+function scheduleKey(s) { return String(s.id).replace('#', '').trim(); }
+
+function upsertById(list, item, keyFn) {
+  const k = keyFn(item);
+  const idx = list.findIndex(x => keyFn(x) === k);
+  if (idx >= 0) list[idx] = item; else list.push(item);
+}
+
+function bookingFromPayload(b) {
+  return {
+    id: b.id ? String(b.id).replace('#', '').trim() : '',
+    service_name: b.service_name || '',
+    place_name: b.place_name || '',
+    date: b.date || '',
+    day: b.day || '',
+    start: b.start || '',
+    end: b.end || '',
+    repeat: b.repeat || 'فردي',
+    repeat_end: b.repeat_end || '',
+    requester_name: b.requester_name || '',
+    requester_phone: b.requester_phone || '',
+    requester_username: b.requester_username || '',
+    notes: b.notes || '',
+    status: b.status || 'معلق',
+    created_at: b.created_at || new Date().toLocaleString('ar-EG'),
+    decided_at: b.decided_at || '',
+    decided_by: b.decided_by || ''
+  };
+}
+
+function scheduleFromPayload(item) {
+  return {
+    id: item.id ? String(item.id).replace('#', '').trim() : '',
+    season_name: item.season_name || 'الأيام السنوية',
+    day_name: item.day_name || 'الأحد',
+    type: item.type || 'صلوات طقسية',
+    name: item.name || '',
+    segment: item.segment || '',
+    place_name: item.place_name || '',
+    start: item.start || '',
+    end: item.end || '',
+    responsible: item.responsible || '',
+    phone: item.phone || '',
+    notes: item.notes || ''
+  };
+}
+
+// =========================================================================
+// 4) doGet — قراءة كل البيانات
+// =========================================================================
+function doGet(e) {
+  try {
+    const ss = getSS();
+    const usersSheet = getOrCreateUsersSheet(ss);
+    const main = getOrCreateMainSheet(ss);
+    const data = readMainData(main);
+    const users = getAllUsers(usersSheet);
+    return replyJson({
+      ok: true,
+      users,
+      schedule: data.schedule,
+      bookings: data.bookings,
+      calendar2026: data.cal2026,
+      calendar2027: data.cal2027,
+      totalUsers: users.length,
+      totalSchedule: data.schedule.length,
+      totalBookings: data.bookings.length
+    });
+  } catch (err) {
+    return replyJson({ ok: false, error: err.toString() });
+  }
+}
+
+function replyJson(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
 }
