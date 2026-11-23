@@ -253,7 +253,7 @@ export async function fetchSheetBookings() {
         method: 'GET',
         headers: { 'User-Agent': 'church-site-bookings-sync' },
         redirect: 'follow',
-        signal: AbortSignal.timeout(12000),
+        signal: AbortSignal.timeout(45000),
       });
       if (res.ok) {
         const data = await res.json();
@@ -277,7 +277,7 @@ export async function fetchSheetBookings() {
         const res = await fetch(url, {
           redirect: 'follow',
           headers: { 'User-Agent': 'church-site-bookings-sync' },
-          signal: AbortSignal.timeout(10000),
+          signal: AbortSignal.timeout(45000),
         });
         if (res.ok) {
           const text = await res.text();

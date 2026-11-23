@@ -186,7 +186,7 @@ export async function fetchSheetSchedule() {
         method: 'GET',
         headers: { 'User-Agent': 'church-site-schedule-sync' },
         redirect: 'follow',
-        signal: AbortSignal.timeout(12000),
+        signal: AbortSignal.timeout(45000),
       });
       if (res.ok) {
         const data = await res.json();
@@ -211,7 +211,7 @@ export async function fetchSheetSchedule() {
         const res = await fetch(url, {
           redirect: 'follow',
           headers: { 'User-Agent': 'church-site-schedule-sync' },
-          signal: AbortSignal.timeout(12000),
+          signal: AbortSignal.timeout(45000),
         });
         if (res.ok) {
           const text = await res.text();
