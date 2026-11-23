@@ -393,8 +393,9 @@ async function loadSchedule() {
 function renderSchedule(container, rows, season, approved = [], opts = {}) {
   container.innerHTML = '';
   const fmtD = d => d.toLocaleDateString('en-CA');
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  let end = new Date(today); end.setDate(end.getDate() + 370);
+  // نفس نطاق الشيت: من 2026-01-01 إلى 2027-12-31 (وامتداد لأي حجز بعده)
+  const start = new Date(2026, 0, 1);
+  let end = new Date(2027, 11, 31);
   approved.forEach(b => {
     const bd = new Date((b.repeat_end || b.date || '') + 'T00:00:00');
     if (!isNaN(bd) && bd > end) end = bd;
@@ -407,7 +408,7 @@ function renderSchedule(container, rows, season, approved = [], opts = {}) {
   for (const r of rows) {
     const wd = Number(r.day);
     if (isNaN(wd)) continue;
-    const d = new Date(today);
+    const d = new Date(start);
     while (d <= end) {
       if (d.getDay() === wd) push(fmtD(d), { kind: 'sched', data: r });
       d.setDate(d.getDate() + 1);
@@ -422,7 +423,7 @@ function renderSchedule(container, rows, season, approved = [], opts = {}) {
     const d = new Date(s);
     let g = 0;
     while (d <= limit && d <= end && g++ < 600) {
-      if (d >= today) push(fmtD(d), { kind: 'booking', data: b });
+      if (d >= start) push(fmtD(d), { kind: 'booking', data: b });
       if (!isW) break;
       d.setDate(d.getDate() + 7);
     }
