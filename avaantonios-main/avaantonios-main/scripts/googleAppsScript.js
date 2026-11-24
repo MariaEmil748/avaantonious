@@ -30,7 +30,7 @@ const TAB_DATA = 'البيانات';
 // معرف الجدول المستهدف — يخلي السكريبت يشتغل على الجدول الصح
 // حتى لو اتعمل Deploy من مشروع Apps Script مش مرتبط بالجدول مباشرة
 const SHEET_ID = '1cms7RitJ9I7rY5HaJxTsWgeyPLYKCbOVOZQ1WscEIjk';
-const SCRIPT_BUILD = '2026-11-24-B';
+const SCRIPT_BUILD = '2026-11-24-C';
 
 function getSS() {
   if (SHEET_ID) return SpreadsheetApp.openById(SHEET_ID);
@@ -424,6 +424,28 @@ function writeEventTable(sheet, rows) {
     sheet.getRange(1, 1, 1, TABLE_COLS).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold').setHorizontalAlignment('center');
     sheet.getRange(2, 1, 1, TABLE_COLS).setBackground('#0f172a').setFontColor('#ffffff').setFontWeight('bold');
     sheet.setFrozenRows(2);
+
+    // قوائم منسدلة للأعمدة: اليوم / المكان / الحالة
+    const DV_ROWS = 500;
+    const dv = (colIdx, list) => {
+      const rule = SpreadsheetApp.newDataValidation()
+        .requireValueInList(list, true)
+        .setAllowInvalid(true)
+        .setHelpText('اختار من القايمة أو اكتب قيمة تانية')
+        .build();
+      sheet.getRange(3, colIdx, DV_ROWS, 1).setDataValidation(rule);
+    };
+    dv(3, DAYS_AR_FULL); // اليوم
+    dv(4, [
+      'كنيسة الأنبا أنطونيوس',
+      'كنيسة الأنبا إبرآم (قاعة المناسبات)',
+      'كنيسة السيدة العذراء',
+      'كنيسة الملاك ميخائيل',
+      'مبني الخدمات – الدور الرابع والخامس',
+      'مبني الخدمات – الدور السابع والثامن',
+      'مبني الخدمات – الدور التاسع'
+    ]); // المكان
+    dv(8, ['مقبول', 'معلق', 'مرفوض']); // الحالة
   } catch (e) {}
   return kept.length;
 }
