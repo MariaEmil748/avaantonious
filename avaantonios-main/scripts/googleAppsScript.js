@@ -30,7 +30,7 @@ const TAB_DATA = 'البيانات';
 // معرف الجدول المستهدف — يخلي السكريبت يشتغل على الجدول الصح
 // حتى لو اتعمل Deploy من مشروع Apps Script مش مرتبط بالجدول مباشرة
 const SHEET_ID = '1cms7RitJ9I7rY5HaJxTsWgeyPLYKCbOVOZQ1WscEIjk';
-const SCRIPT_BUILD = '2026-11-24-A';
+const SCRIPT_BUILD = '2026-11-24-B';
 
 function getSS() {
   if (SHEET_ID) return SpreadsheetApp.openById(SHEET_ID);
@@ -44,12 +44,10 @@ const MARK_CAL2026 = '##CAL2026##'; // legacy — للقراءة من النسخ
 const MARK_CAL2027 = '##CAL2027##'; // legacy
 const MARK_DATA = '##DATA##';
 
-// منطقة الإدخال اليدوي في آخر تاب «الجدول» — المستخدم يكتب فيها مواعيد/حجوزات
-// بتاريخ محدد، بتتحول تلقائياً لحجوزات بتظهر في الموقع والتقويم اليومي
-const MANUAL_MARK = '##MANUAL##';
-const MANUAL_HEADERS = ['التاريخ', 'من', 'إلى', 'المكان', 'الاسم / الحجز', 'ملاحظات', 'الحالة'];
-const MANUAL_ROWS = 40;
-const MANUAL_ID_BASE = 900000000;
+// «الجدول» = جدول يدوي بالكامل — صف لكل موعد يكتبه المستخدم أو يجي من الموقع
+const TABLE_HEADERS = ['م', 'التاريخ', 'اليوم', 'المكان', 'من', 'إلى', 'الاسم / الحجز', 'الحالة', 'ملاحظات'];
+const TABLE_COLS = TABLE_HEADERS.length;
+const TABLE_TITLE = '📋 جدول المواعيد — صف لكل موعد (التاريخ | اليوم | المكان | من | إلى | الاسم / الحجز | الحالة | ملاحظات)';
 
 const MAIN_COLS = 40; // sufficiently wide for the 2027 calendar (~26 cols) plus schedule/booking sections
 
@@ -348,59 +346,125 @@ function splitCalendarYears(rows) {
   return out;
 }
 
-// بيقرأ منطقة الإدخال اليدوي (##MANUAL##) من آخر تاب «الجدول»
-// بيرجع دايماً مصفوفة طولها MANUAL_ROWS (صفوف فاضية = مصفوفات فاضية)
-function getManualRows(sheet) {
-  const out = [];
-  for (let i = 0; i < MANUAL_ROWS; i++) out.push(new Array(MANUAL_HEADERS.length).fill(''));
-  try {
-    const last = sheet.getLastRow();
-    if (last < 3) return out;
-    const colA = sheet.getRange(1, 1, last, 1).getValues();
-    let mIdx = -1;
-    for (let i = 0; i < colA.length; i++) {
-      if (String(colA[i][0]).trim() === MANUAL_MARK) { mIdx = i; break; }
-    }
-    if (mIdx < 0) return out;
-    const startRow = mIdx + 2; // بعد سطر الماركر وسطر الهيدر
-    const n = Math.min(MANUAL_ROWS, last - startRow + 1);
-    if (n <= 0) return out;
-    const vals = sheet.getRange(startRow, 1, n, MANUAL_HEADERS.length).getValues();
-    for (let i = 0; i < n; i++) {
-      for (let c = 0; c < MANUAL_HEADERS.length; c++) out[i][c] = vals[i][c];
-    }
-  } catch (e) {}
-  return out;
+// =========================================================================
+// جدول «الجدول» اليدوي: صف لكل موعد — المستخدم يكتب والويب سايت يقرا
+// الأعمدة: م | التاريخ | اليوم | المكان | من | إلى | الاسم / الحجز | الحالة | ملاحظات
+// =========================================================================
+const DAYS_AR_FULL = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+
+function weekdayAr(dateStr) {
+  const m = String(dateStr || '').match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (!m) return '';
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return isNaN(d) ? '' : DAYS_AR_FULL[d.getDay()];
 }
 
-// بيحوّل صفوف الإدخال اليدوي لحجوزات (id ثابت = MANUAL_ID_BASE + رقم الصف)
-function manualRowsToBookings(rows) {
-  const out = [];
-  rows.forEach((r, idx) => {
-    const dateRaw = String(r[0] || '').trim();
-    const name = String(r[4] || '').trim();
-    if (!dateRaw && !name) return;
-    out.push({
-      id: MANUAL_ID_BASE + idx + 1,
-      service_name: name || 'موعد',
-      place_name: String(r[3] || '').trim(),
-      date: toDateKey(r[0]) || '',
-      day: '',
-      start: String(r[1] || '').trim(),
-      end: String(r[2] || '').trim(),
-      repeat: 'none',
-      repeat_end: '',
-      requester_name: 'يدوي',
-      requester_phone: '',
-      requester_username: '',
-      notes: String(r[5] || '').trim(),
-      status: String(r[6] || '').trim() || 'مقبول',
-      created_at: '',
-      decided_at: '',
-      decided_by: ''
-    });
+// بيلاقي صف الهيدر بتاع الجدول اليدوي (لازم يكون فيه التاريخ + المكان + الاسم/الحجز + الحالة)
+function findTableHeaderRow(sheet) {
+  const last = Math.min(sheet.getLastRow(), 20);
+  if (last < 1) return -1;
+  const vals = sheet.getRange(1, 1, last, TABLE_COLS).getValues();
+  for (let i = 0; i < vals.length; i++) {
+    const cells = vals[i].map(c => String(c).trim());
+    const has = t => cells.indexOf(t) >= 0;
+    if (has('التاريخ') && has('المكان') && has('الاسم / الحجز') && has('الحالة')) return i + 1; // 1-based
+  }
+  return -1;
+}
+
+// بيقرأ صفوف الجدول اليدوي — بيرجع { headerRow, rows } (rows مصفوفات بطول TABLE_COLS)
+function readEventRows(sheet) {
+  const headerRow = findTableHeaderRow(sheet);
+  const rows = [];
+  if (headerRow < 0) return { headerRow: -1, rows };
+  const last = sheet.getLastRow();
+  const n = last - headerRow;
+  if (n <= 0) return { headerRow, rows };
+  const vals = sheet.getRange(headerRow + 1, 1, n, TABLE_COLS).getValues();
+  for (let i = 0; i < vals.length; i++) {
+    const r = new Array(TABLE_COLS).fill('');
+    for (let c = 0; c < TABLE_COLS; c++) r[c] = vals[i][c];
+    rows.push(r);
+  }
+  return { headerRow, rows };
+}
+
+// بيكتب الجدول اليدوي — بيحافظ على صفوف المستخدم + بيعيد ترقيم عمود «م» وبيملأ «اليوم» تلقائياً
+function writeEventTable(sheet, rows) {
+  // شيل الصفوف الفاضية من الآخر + سطور فاضية زائدة
+  let end = rows.length;
+  while (end > 0 && rows[end - 1].every(c => String(c).trim() === '')) end--;
+  const kept = rows.slice(0, end);
+  const spare = Math.max(0, 20 - kept.length);
+  const out = [[TABLE_TITLE], TABLE_HEADERS];
+  // احفظ الـ ids الموجودة (حجوزات الموقع ليها ids كبيرة) — ودي بس للصفوف اللي ملهاش رقم
+  let maxId = 0;
+  kept.forEach(r => {
+    const n = Number(String(r[0]).replace('#', '').trim());
+    if (n > maxId) maxId = n;
   });
-  return out;
+  let nextId = maxId + 1;
+  kept.forEach(r => {
+    const hasContent = r.some(c => String(c).trim() !== '');
+    const nr = new Array(TABLE_COLS).fill('');
+    for (let c = 0; c < TABLE_COLS; c++) nr[c] = r[c];
+    if (hasContent) {
+      const idStr = String(nr[0]).replace('#', '').trim();
+      if (!idStr || isNaN(Number(idStr))) nr[0] = nextId++;
+      const dk = toDateKey(nr[1]);
+      nr[1] = dk || nr[1];
+      if (!String(nr[2]).trim()) nr[2] = weekdayAr(nr[1]);
+    }
+    out.push(nr);
+  });
+  for (let i = 0; i < spare; i++) out.push(new Array(TABLE_COLS).fill(''));
+  sheet.clearContents();
+  sheet.getRange(1, 1, out.length, TABLE_COLS).setValues(out.map(r => padTo(r, TABLE_COLS)));
+  try {
+    sheet.getRange(1, 1, 1, TABLE_COLS).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold').setHorizontalAlignment('center');
+    sheet.getRange(2, 1, 1, TABLE_COLS).setBackground('#0f172a').setFontColor('#ffffff').setFontWeight('bold');
+    sheet.setFrozenRows(2);
+  } catch (e) {}
+  return kept.length;
+}
+
+// صف جدول → كائن حجز
+function tableRowToBooking(r) {
+  return {
+    id: Number(String(r[0]).replace('#', '').trim()) || String(r[0]).trim(),
+    service_name: String(r[6] || '').trim(),
+    place_name: String(r[3] || '').trim(),
+    date: toDateKey(r[1]) || '',
+    day: String(r[2] || '').trim(),
+    start: String(r[4] || '').trim(),
+    end: String(r[5] || '').trim(),
+    repeat: 'none',
+    repeat_end: '',
+    requester_name: '',
+    requester_phone: '',
+    requester_username: '',
+    notes: String(r[8] || '').trim(),
+    status: String(r[7] || '').trim() || 'مقبول',
+    created_at: '',
+    decided_at: '',
+    decided_by: ''
+  };
+}
+
+// كائن حجز → صف جدول
+function bookingToTableRow(b) {
+  const dateKey = toDateKey(b.date) || b.date || '';
+  return [
+    b.id ? String(b.id).replace('#', '').trim() : '',
+    dateKey,
+    b.day || weekdayAr(dateKey),
+    b.place_name || '',
+    b.start || '',
+    b.end || '',
+    b.service_name || '',
+    b.status || 'مقبول',
+    b.notes || ''
+  ];
 }
 
 // بيقرأ الأقسام المنظمة — من تاب «البيانات» لو موجود، وإلا من «الجدول» (الشكل القديم)
@@ -421,12 +485,21 @@ function readMainData(sheet) {
     cal2026 = readCalendarSectionRows(src, MARK_CAL2026).rows;
     cal2027 = readCalendarSectionRows(src, MARK_CAL2027).rows;
   }
-  const bookings = book.rows.map(bookingFromRow).filter(b => b.id !== '' && b.id !== undefined);
-  // إدخالات يدوية من آخر «الجدول» — بتتحول لحجوزات عادية (بدون تكرار لو اتكتبت في البيانات كمان)
-  const seenIds = new Set(bookings.map(b => String(b.id)));
-  manualRowsToBookings(getManualRows(sheet)).forEach(b => {
-    if (seenIds.has(String(b.id))) return;
-    seenIds.add(String(b.id));
+  // الحجوزات/المواعيد: الجدول اليدوي في «الجدول» هو المصدر الأساسي + قسم ##BOOKINGS## القديم (لو فاضل)
+  const bookings = [];
+  const seenIds = new Set();
+  readEventRows(sheet).rows.forEach(r => {
+    const b = tableRowToBooking(r);
+    if (!b.service_name && !b.date) return;
+    const key = String(b.id);
+    if (seenIds.has(key)) return;
+    seenIds.add(key);
+    bookings.push(b);
+  });
+  book.rows.map(bookingFromRow).filter(b => b.id !== '' && b.id !== undefined).forEach(b => {
+    const key = String(b.id);
+    if (seenIds.has(key)) return;
+    seenIds.add(key);
     bookings.push(b);
   });
   return {
@@ -617,30 +690,17 @@ function padTo(row, n) {
 function renderMainSheet(sheet, data, opts) {
   opts = opts || {};
   const doFormat = opts.format !== false;
-  const view = buildDayViewRows(data);
-  const dayRows = view.rows;
-  const viewCols = 6;
-  const viewHeaders = ['التاريخ', 'اليوم', 'المكان', 'الوقت', 'الاسم / الحجز', 'الأعياد / الصوام / فعاليات التقويم'];
 
-  // ===== الجزء المرئي: التقويم اليومي (صف لكل مكان في كل يوم) =====
-  const viewOut = [
-    ['📅 جدول المواعيد اليومي — كل يوم وكل مكان وكل اللي فيه'],
-    viewHeaders
-  ];
-  dayRows.forEach(r => viewOut.push(padTo(r.c || r, viewCols)));
+  // ===== «الجدول» = جدول يدوي — بنحافظ على صفوف المستخدم وبنعيد كتابتها منسقة =====
+  const savedRows = readEventRows(sheet).rows;
+  const eventCount = writeEventTable(sheet, savedRows);
 
-  // ===== بيانات الجهاز (بتتقري وتتكيتَب من الويب سايت) — في تاب «البيانات» =====
+  // ===== بيانات الجهاز (المواعيد الثابتة + التقويم) — في تاب «البيانات» =====
   const dataOut = [];
   dataOut.push([MARK_SCHEDULE]);
   dataOut.push(HEADERS_SCHEDULE);
   const schedHeaderIdx = dataOut.length; // رقم الهيدر جوه dataOut (1-based)
   (data.schedule || []).forEach(it => dataOut.push(scheduleToRow(it)));
-  dataOut.push([]);
-
-  dataOut.push([MARK_BOOKINGS]);
-  dataOut.push(HEADERS_BOOKINGS);
-  const bookHeaderIdx = dataOut.length;
-  (data.bookings || []).forEach(b => dataOut.push(bookingToRow(b)));
   dataOut.push([]);
 
   dataOut.push([MARK_CAL]);
@@ -650,65 +710,43 @@ function renderMainSheet(sheet, data, opts) {
   dataOut.push(['2027']);
   (data.cal2027 || []).forEach(r => dataOut.push(padRow(r)));
 
-  // احفظ إدخالات المستخدم اليدوية قبل المسح — بترجع تتكتب تاني تحت الجدول
-  const manualSaved = getManualRows(sheet);
-
-  sheet.clearContents();
-  // «الجدول» = التقويم اليومي + منطقة إدخال يدوية في الآخر
-  const manualBlock = [
-    ['✏️ أضف مواعيدك هنا — التاريخ (YYYY-MM-DD) | من | إلى | المكان | الاسم / الحجز | ملاحظات | الحالة'],
-    [MANUAL_MARK],
-    MANUAL_HEADERS
-  ];
-  manualSaved.forEach(r => manualBlock.push(padTo(r, MANUAL_HEADERS.length)));
-  const allOut = viewOut.concat(manualBlock);
-  sheet.getRange(1, 1, allOut.length, MANUAL_HEADERS.length).setValues(allOut.map(r => padTo(r, MANUAL_HEADERS.length)));
-
-  // «البيانات» = الأقسام المنظمة
   const ss = sheet.getParent();
   const dataSheet = getOrCreateDataSheet(ss);
   dataSheet.clearContents();
   dataSheet.getRange(1, 1, dataOut.length, MAIN_COLS).setValues(dataOut.map(padRow));
   try { dataSheet.hideSheet(); } catch (e) {}
 
-  if (!doFormat) return { viewRows: viewOut.length, dataRows: dataOut.length };
+  if (!doFormat) return { rows: eventCount, dataRows: dataOut.length };
 
-  // تنسيقminimal للتقويم اليومي — بدون merge أو حدود تقيلة
-  sheet.getRange(1, 1, 1, viewCols).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold').setHorizontalAlignment('center');
-  sheet.getRange(2, 1, 1, viewCols).setBackground('#0f172a').setFontColor('#ffffff').setFontWeight('bold');
-  sheet.getRange(3, 1, Math.max(0, dayRows.length), 1).setNumberFormat('@');
-
-  // تلوين الصفوف بـ Conditional Formatting — بيشتغل أوتوماتيك ومن غير استهلاك وقت في كل توليد
+  // تلوين عمود «الحالة» بـ Conditional Formatting
   try {
-    const lastRow = Math.max(sheet.getMaxRows() - 2, dayRows.length + 10);
-    const cfRange = [sheet.getRange(3, 1, lastRow, viewCols)];
-    const D = '$E3'; // عمود الاسم/الحجز (فيه الحالة)
+    const lastRow = Math.max(sheet.getMaxRows() - 2, eventCount + 40);
+    const cfRange = [sheet.getRange(3, 1, lastRow, TABLE_COLS)];
+    const D = '$H3'; // عمود الحالة
     const cfRules = [
       ['=REGEXMATCH(' + D + ',"مرفوض|rejected")', '#fee2e2'],
       ['=REGEXMATCH(' + D + ',"معلق|pending")', '#fef9c3'],
-      ['=REGEXMATCH(' + D + ',"مقبول|approved")', '#dcfce7'],
-      ['=$C3="—"', '#f8fafc'],
-      ['=AND($C3<>"",$C3<>"—",$D3="",$E3="",$F3="")', '#e0e7ff'],
-      ['=OR($D3<>"",$E3<>"")', '#dbeafe']
+      ['=REGEXMATCH(' + D + ',"مقبول|approved")', '#dcfce7']
     ].map(r => SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(r[0]).setBackground(r[1]).setRanges(cfRange).build());
     sheet.setConditionalFormatRules(cfRules);
   } catch (e) { /* CF مش حرج */ }
   sheet.setFrozenRows(2);
-  sheet.setColumnWidth(1, 105);
-  sheet.setColumnWidth(2, 80);
-  sheet.setColumnWidth(3, 260);
-  sheet.setColumnWidth(4, 130);
-  sheet.setColumnWidth(5, 340);
-  sheet.setColumnWidth(6, 260);
+  sheet.setColumnWidth(1, 55);
+  sheet.setColumnWidth(2, 110);
+  sheet.setColumnWidth(3, 90);
+  sheet.setColumnWidth(4, 230);
+  sheet.setColumnWidth(5, 110);
+  sheet.setColumnWidth(6, 110);
+  sheet.setColumnWidth(7, 320);
+  sheet.setColumnWidth(8, 90);
+  sheet.setColumnWidth(9, 260);
 
-  // تنسيق بسيط لأقسام البيانات (على تاب «البيانات» — الصف = نفس الترتيب في dataOut)
+  // تنسيق بسيط لقسم المواعيد الثابتة في «البيانات»
   const markerStyle = (rowIdx, color) => {
     dataSheet.getRange(rowIdx, 1, 1, MAIN_COLS).setBackground(color).setFontColor('#ffffff').setFontWeight('bold');
   };
   markerStyle(schedHeaderIdx - 1, '#7f1d1d');
-  markerStyle(bookHeaderIdx - 1, '#1e3a8a');
   dataSheet.getRange(schedHeaderIdx, 1, 1, HEADERS_SCHEDULE.length).setBackground('#7f1d1d').setFontColor('#ffffff').setFontWeight('bold');
-  dataSheet.getRange(bookHeaderIdx, 1, 1, HEADERS_BOOKINGS.length).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
 }
 
 // =========================================================================
@@ -1026,48 +1064,87 @@ function doPostInner(e) {
       return replyJson({ ok: true, action: 'pushAllUsers', count: list.length });
     }
 
-    // ---------- المواعيد (الحجوزات) ----------
+    // ---------- المواعيد (الحجوزات) — بتتكتب كصفوف في جدول «الجدول» اليدوي ----------
+    const statusToArCell = (st) => {
+      const s = String(st || '');
+      const l = s.toLowerCase();
+      if (s.includes('مقبول') || l.includes('approved')) return 'مقبول';
+      if (s.includes('مرفوض') || l.includes('rejected')) return 'مرفوض';
+      if (s.includes('محذوف') || s.includes('ملغي') || l.includes('deleted')) return 'محذوف';
+      if (s.includes('معلق') || l.includes('pending')) return 'معلق';
+      return s || 'معلق';
+    };
+    const loadRows = () => readEventRows(main).rows;
+    const saveRows = (rows) => writeEventTable(main, rows);
+    const findRowIdx = (rows, id) => {
+      const key = String(id).replace('#', '').trim();
+      return rows.findIndex(r => String(r[0]).replace('#', '').trim() === key);
+    };
+    const nextId = (rows) => {
+      let mx = 0;
+      rows.forEach(r => { const n = Number(String(r[0]).replace('#', '').trim()); if (n > mx) mx = n; });
+      return mx + 1;
+    };
+
     if (action === 'createBooking' || action === 'add') {
       const b = bookingFromPayload(data.booking || {});
-      upsertById(mainData.bookings, b, bookingKey);
-      renderMainSheet(main, mainData);
+      const rows = loadRows();
+      if (!b.id) b.id = nextId(rows);
+      // ضيف في أول صف فاضي من الآخر
+      let idx = rows.length;
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (rows[i].some(c => String(c).trim() !== '')) { idx = i + 1; break; }
+      }
+      const row = bookingToTableRow(b);
+      row[7] = statusToArCell(b.status);
+      if (idx >= rows.length) rows.push(row); else rows.splice(idx, 0, row);
+      saveRows(rows);
       return replyJson({ ok: true, action: 'created', bookingId: b.id });
     }
     if (action === 'updateBookingStatus' || action === 'setStatus') {
       const id = String(data.id).replace('#', '').trim();
-      const st = data.status_ar || (data.status === 'approved' ? 'مقبول' : data.status === 'rejected' ? 'مرفوض' : data.status === 'deleted' ? 'محذوف' : 'معلق');
-      if (st === 'محذوف' || data.status === 'deleted') {
-        mainData.bookings = mainData.bookings.filter(b => String(b.id) !== id);
-        renderMainSheet(main, mainData);
+      const st = data.status_ar || statusToArCell(data.status === 'approved' ? 'approved' : data.status === 'rejected' ? 'rejected' : data.status === 'deleted' ? 'deleted' : 'pending');
+      if (st === 'محذوف') {
+        const rows = loadRows();
+        const i = findRowIdx(rows, id);
+        if (i >= 0) { rows.splice(i, 1); saveRows(rows); }
         return replyJson({ ok: true, action: 'deleted', id });
       }
-      const isPending = st === 'معلق' || data.status === 'pending';
-      const b = mainData.bookings.find(x => String(x.id) === id);
-      if (b) {
-        b.status = st;
-        b.decided_at = isPending ? '' : (data.decided_at || new Date().toLocaleString('ar-EG'));
-        b.decided_by = isPending ? '' : (data.decided_by || '');
-        renderMainSheet(main, mainData);
+      const rows = loadRows();
+      const i = findRowIdx(rows, id);
+      if (i >= 0) {
+        rows[i][7] = st;
+        saveRows(rows);
         return replyJson({ ok: true, action: 'status_updated', id, status: st });
       }
       return replyJson({ ok: false, error: 'booking not found: ' + id });
     }
     if (action === 'editBooking') {
       const b = bookingFromPayload(data.booking || {});
-      upsertById(mainData.bookings, b, bookingKey);
-      renderMainSheet(main, mainData);
+      const rows = loadRows();
+      const i = findRowIdx(rows, b.id);
+      const row = bookingToTableRow(b);
+      row[7] = statusToArCell(b.status);
+      if (i >= 0) rows[i] = row; else rows.push(row);
+      saveRows(rows);
       return replyJson({ ok: true, action: 'edited', bookingId: b.id });
     }
     if (action === 'deleteBooking') {
       const id = String(data.id).replace('#', '').trim();
-      mainData.bookings = mainData.bookings.filter(b => String(b.id) !== id);
-      renderMainSheet(main, mainData);
+      const rows = loadRows();
+      const i = findRowIdx(rows, id);
+      if (i >= 0) { rows.splice(i, 1); saveRows(rows); }
       return replyJson({ ok: true, action: 'deleted', id });
     }
     if (action === 'bulkPush') {
-      mainData.bookings = (data.bookings || []).map(bookingFromPayload);
-      renderMainSheet(main, mainData);
-      return replyJson({ ok: true, action: 'bulkPush', count: mainData.bookings.length });
+      const rows = (data.bookings || []).map(bb => {
+        const b = bookingFromPayload(bb);
+        const r = bookingToTableRow(b);
+        r[7] = statusToArCell(b.status);
+        return r;
+      }).filter(r => String(r[6]).trim() || String(r[1]).trim());
+      saveRows(rows);
+      return replyJson({ ok: true, action: 'bulkPush', count: rows.length });
     }
 
     // ---------- المواعيد الثابتة ----------

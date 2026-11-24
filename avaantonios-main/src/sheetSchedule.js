@@ -190,7 +190,7 @@ export async function fetchSheetSchedule() {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data && Array.isArray(data.schedule) && data.schedule.length > 0) {
+        if (data && Array.isArray(data.schedule)) {
           return { ok: true, source: 'webhook', schedule: data.schedule };
         }
       }
@@ -397,7 +397,7 @@ let lastScheduleSignature = '';
 
 export async function syncFixedScheduleFromSheet(db) {
   const res = await fetchSheetSchedule();
-  if (!res.ok || !Array.isArray(res.schedule) || res.schedule.length === 0) {
+  if (!res.ok || !Array.isArray(res.schedule)) {
     return { ok: false, error: res.error || 'لم يتم العثور على مواعيد ثابتة في الجدول' };
   }
 
