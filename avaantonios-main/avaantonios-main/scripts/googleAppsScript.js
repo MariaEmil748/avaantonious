@@ -30,7 +30,7 @@ const TAB_DATA = 'البيانات';
 // معرف الجدول المستهدف — يخلي السكريبت يشتغل على الجدول الصح
 // حتى لو اتعمل Deploy من مشروع Apps Script مش مرتبط بالجدول مباشرة
 const SHEET_ID = '1cms7RitJ9I7rY5HaJxTsWgeyPLYKCbOVOZQ1WscEIjk';
-const SCRIPT_BUILD = '2026-11-24-D';
+const SCRIPT_BUILD = '2026-11-24-E';
 
 function getSS() {
   if (SHEET_ID) return SpreadsheetApp.openById(SHEET_ID);
@@ -480,6 +480,53 @@ function writeEventTable(sheet, rows) {
       'مبني الخدمات – الدور التاسع'
     ]); // المكان
     dv(8, ['مقبول', 'معلق', 'مرفوض']); // الحالة
+
+    // قوائم الأوقات لعمودي «من» و«إلى» — من 5:00 ص لـ 11:30 م (كل نص ساعة)
+    const TIMES = [];
+    for (let h = 5; h <= 23; h++) {
+      for (const m of ['00', '30']) {
+        let hh = h, ap = 'ص';
+        if (h === 12) ap = 'م';
+        else if (h > 12) { hh = h - 12; ap = 'م'; }
+        TIMES.push(hh + ':' + m + ' ' + ap);
+      }
+    }
+    dv(5, TIMES); // من
+    dv(6, TIMES); // إلى
+
+    // ملاحظات إرشادية على خلايا الهيدر (بتظهر لما توقف عليها)
+    sheet.getRange(2, 2).setNote('التاريخ بصيغة: YYYY-MM-DD\nمثال: 2026-12-05\nاليوم بيتكتب تلقائي — مش لازم تكتبه');
+    sheet.getRange(2, 5).setNote('وقت البداية — اختار من القايمة أو اكتب مثال: 6:00 م');
+    sheet.getRange(2, 6).setNote('وقت النهاية — اختار من القايمة أو اكتب مثال: 8:00 م');
+    sheet.getRange(2, 7).setNote('اسم الفعالية أو الحجز — نص حر');
+    sheet.getRange(2, 8).setNote('الحالة: مقبول / معلق / مرفوض — فاضي = مقبول');
+
+    // بلوك «طريقة الكتابة» — في عمود بعيد عن الجدول عشان مايدخلش في البيانات
+    const HELP_COL = TABLE_COLS + 2; // عمود K
+    const help = [
+      '📖 طريقة الكتابة في الجدول:',
+      '─────────────────────────',
+      '1) التاريخ: بصيغة 2026-12-05 (سنة-شهر-يوم)',
+      '2) اليوم: بيتكتب تلقائي — سيبه فاضي',
+      '3) المكان: اختار من القايمة المنسدلة',
+      '4) من / إلى: اختار الوقت من القايمة',
+      '5) الاسم / الحجز: اكتب اسم الفعالية',
+      '6) الحالة: مقبول / معلق / مرفوض',
+      '7) ملاحظات: أي تفاصيل إضافية',
+      '',
+      'مثال لصف كامل:',
+      '2026-12-05 | | | كنيسة الأنبا أنطونيوس | 6:00 م | 8:00 م | فعالية العيد | مقبول |',
+      '',
+      'كل صف = موعد واحد — يظهر في الموقع تلقائياً خلال ثواني'
+    ];
+    help.forEach((t, i) => {
+      const c = sheet.getRange(i + 1, HELP_COL);
+      c.setValue(t);
+      if (i === 0) c.setFontWeight('bold').setFontSize(12).setFontColor('#1e3a8a');
+      else if (t === '─────────────────────────') c.setFontColor('#94a3b8');
+      else c.setFontColor('#334155');
+    });
+    sheet.setColumnWidth(HELP_COL, 320);
   } catch (e) {}
   return kept.length;
 }
