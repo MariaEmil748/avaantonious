@@ -26,7 +26,7 @@ function send(res, code, body, headers = {}) {
   res.writeHead(code, { 'Content-Type': isJson ? 'application/json; charset=utf-8' : (headers['Content-Type'] || 'text/plain; charset=utf-8'), 'Content-Length': buf.length, ...headers });
   res.end(buf);
 }
-function json(res, code, obj) { send(res, code, obj); }
+function json(res, code, obj) { send(res, code, obj, { 'Cache-Control': 'no-store' }); }
 
 function parseCookies(req) {
   const out = {}; const h = req.headers.cookie; if (!h) return out;
@@ -506,10 +506,11 @@ async function serveStatic(req, res, path) {
     if (s.isDirectory()) filePath = join(filePath, 'index.html');
     const data = await readFile(filePath);
     const ext = extname(filePath).toLowerCase();
-    return send(res, 200, data, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    const noCache = ['.html', '.js', '.css'].includes(ext) ? { 'Cache-Control': 'no-cache' } : {};
+    return send(res, 200, data, { 'Content-Type': MIME[ext] || 'application/octet-stream', ...noCache });
   } catch {
     // SPA fallback
-    try { const data = await readFile(join(PUBLIC_DIR, 'index.html')); return send(res, 200, data, { 'Content-Type': MIME['.html'] }); }
+    try { const data = await readFile(join(PUBLIC_DIR, 'index.html')); return send(res, 200, data, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' }); }
     catch { return send(res, 404, 'not found'); }
   }
 }
