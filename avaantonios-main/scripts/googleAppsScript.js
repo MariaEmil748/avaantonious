@@ -30,7 +30,7 @@ const TAB_DATA = 'البيانات';
 // معرف الجدول المستهدف — يخلي السكريبت يشتغل على الجدول الصح
 // حتى لو اتعمل Deploy من مشروع Apps Script مش مرتبط بالجدول مباشرة
 const SHEET_ID = '1cms7RitJ9I7rY5HaJxTsWgeyPLYKCbOVOZQ1WscEIjk';
-const SCRIPT_BUILD = '2026-11-23-A';
+const SCRIPT_BUILD = '2026-11-24-A';
 
 function getSS() {
   if (SHEET_ID) return SpreadsheetApp.openById(SHEET_ID);
@@ -43,6 +43,13 @@ const MARK_CAL = '##CAL##';
 const MARK_CAL2026 = '##CAL2026##'; // legacy — للقراءة من النسخ القديمة
 const MARK_CAL2027 = '##CAL2027##'; // legacy
 const MARK_DATA = '##DATA##';
+
+// منطقة الإدخال اليدوي في آخر تاب «الجدول» — المستخدم يكتب فيها مواعيد/حجوزات
+// بتاريخ محدد، بتتحول تلقائياً لحجوزات بتظهر في الموقع والتقويم اليومي
+const MANUAL_MARK = '##MANUAL##';
+const MANUAL_HEADERS = ['التاريخ', 'من', 'إلى', 'المكان', 'الاسم / الحجز', 'ملاحظات', 'الحالة'];
+const MANUAL_ROWS = 40;
+const MANUAL_ID_BASE = 900000000;
 
 const MAIN_COLS = 40; // sufficiently wide for the 2027 calendar (~26 cols) plus schedule/booking sections
 
@@ -341,6 +348,61 @@ function splitCalendarYears(rows) {
   return out;
 }
 
+// بيقرأ منطقة الإدخال اليدوي (##MANUAL##) من آخر تاب «الجدول»
+// بيرجع دايماً مصفوفة طولها MANUAL_ROWS (صفوف فاضية = مصفوفات فاضية)
+function getManualRows(sheet) {
+  const out = [];
+  for (let i = 0; i < MANUAL_ROWS; i++) out.push(new Array(MANUAL_HEADERS.length).fill(''));
+  try {
+    const last = sheet.getLastRow();
+    if (last < 3) return out;
+    const colA = sheet.getRange(1, 1, last, 1).getValues();
+    let mIdx = -1;
+    for (let i = 0; i < colA.length; i++) {
+      if (String(colA[i][0]).trim() === MANUAL_MARK) { mIdx = i; break; }
+    }
+    if (mIdx < 0) return out;
+    const startRow = mIdx + 2; // بعد سطر الماركر وسطر الهيدر
+    const n = Math.min(MANUAL_ROWS, last - startRow + 1);
+    if (n <= 0) return out;
+    const vals = sheet.getRange(startRow, 1, n, MANUAL_HEADERS.length).getValues();
+    for (let i = 0; i < n; i++) {
+      for (let c = 0; c < MANUAL_HEADERS.length; c++) out[i][c] = vals[i][c];
+    }
+  } catch (e) {}
+  return out;
+}
+
+// بيحوّل صفوف الإدخال اليدوي لحجوزات (id ثابت = MANUAL_ID_BASE + رقم الصف)
+function manualRowsToBookings(rows) {
+  const out = [];
+  rows.forEach((r, idx) => {
+    const dateRaw = String(r[0] || '').trim();
+    const name = String(r[4] || '').trim();
+    if (!dateRaw && !name) return;
+    out.push({
+      id: MANUAL_ID_BASE + idx + 1,
+      service_name: name || 'موعد',
+      place_name: String(r[3] || '').trim(),
+      date: toDateKey(r[0]) || '',
+      day: '',
+      start: String(r[1] || '').trim(),
+      end: String(r[2] || '').trim(),
+      repeat: 'none',
+      repeat_end: '',
+      requester_name: 'يدوي',
+      requester_phone: '',
+      requester_username: '',
+      notes: String(r[5] || '').trim(),
+      status: String(r[6] || '').trim() || 'مقبول',
+      created_at: '',
+      decided_at: '',
+      decided_by: ''
+    });
+  });
+  return out;
+}
+
 // بيقرأ الأقسام المنظمة — من تاب «البيانات» لو موجود، وإلا من «الجدول» (الشكل القديم)
 function readMainData(sheet) {
   const ss = sheet.getParent();
@@ -359,9 +421,17 @@ function readMainData(sheet) {
     cal2026 = readCalendarSectionRows(src, MARK_CAL2026).rows;
     cal2027 = readCalendarSectionRows(src, MARK_CAL2027).rows;
   }
+  const bookings = book.rows.map(bookingFromRow).filter(b => b.id !== '' && b.id !== undefined);
+  // إدخالات يدوية من آخر «الجدول» — بتتحول لحجوزات عادية (بدون تكرار لو اتكتبت في البيانات كمان)
+  const seenIds = new Set(bookings.map(b => String(b.id)));
+  manualRowsToBookings(getManualRows(sheet)).forEach(b => {
+    if (seenIds.has(String(b.id))) return;
+    seenIds.add(String(b.id));
+    bookings.push(b);
+  });
   return {
     schedule: sched.rows.map(scheduleFromRow).filter(s => s.name),
-    bookings: book.rows.map(bookingFromRow).filter(b => b.id !== '' && b.id !== undefined),
+    bookings: bookings,
     cal2026: cal2026,
     cal2027: cal2027
   };
@@ -580,9 +650,19 @@ function renderMainSheet(sheet, data, opts) {
   dataOut.push(['2027']);
   (data.cal2027 || []).forEach(r => dataOut.push(padRow(r)));
 
+  // احفظ إدخالات المستخدم اليدوية قبل المسح — بترجع تتكتب تاني تحت الجدول
+  const manualSaved = getManualRows(sheet);
+
   sheet.clearContents();
-  // «الجدول» = التقويم اليومي بس — كتابة على دفعتين عشان منستهلكش ذاكرة زيادة
-  sheet.getRange(1, 1, viewOut.length, viewCols).setValues(viewOut.map(r => padTo(r, viewCols)));
+  // «الجدول» = التقويم اليومي + منطقة إدخال يدوية في الآخر
+  const manualBlock = [
+    ['✏️ أضف مواعيدك هنا — التاريخ (YYYY-MM-DD) | من | إلى | المكان | الاسم / الحجز | ملاحظات | الحالة'],
+    [MANUAL_MARK],
+    MANUAL_HEADERS
+  ];
+  manualSaved.forEach(r => manualBlock.push(padTo(r, MANUAL_HEADERS.length)));
+  const allOut = viewOut.concat(manualBlock);
+  sheet.getRange(1, 1, allOut.length, MANUAL_HEADERS.length).setValues(allOut.map(r => padTo(r, MANUAL_HEADERS.length)));
 
   // «البيانات» = الأقسام المنظمة
   const ss = sheet.getParent();
