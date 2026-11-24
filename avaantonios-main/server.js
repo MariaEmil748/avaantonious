@@ -75,6 +75,20 @@ function validTime(t) { return /^\d{2}:\d{2}$/.test(String(t || '')); }
 function validDate(d) { return /^\d{4}-\d{2}-\d{2}$/.test(String(d || '')); }
 
 // ---------- مزامنة دورية تلقائية مع Google Sheet ----------
+let lastRebuildReq = 0;
+function requestSheetRebuild() {
+  const now = Date.now();
+  if (now - lastRebuildReq < 30000) return; // حد أقصى rebuild كل 30 ثانية
+  lastRebuildReq = now;
+  const url = sheetBookings.loadBookingsConfig().webhookUrl;
+  if (!url) return;
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'rebuildMain' }),
+  }).catch(() => {});
+}
+
 let lastSyncAt = 0;
 let syncPromise = null;
 async function autoSyncWithSheet(minIntervalMs = 5000) {
@@ -83,13 +97,18 @@ async function autoSyncWithSheet(minIntervalMs = 5000) {
   if (syncPromise) return syncPromise;
   lastSyncAt = now;
   syncPromise = (async () => {
+    let changed = false;
     try {
       if (sheetBookings.isConfigured()) {
-        await sheetBookings.syncFromSheet(db);
+        const r = await sheetBookings.syncFromSheet(db);
+        if (r && r.ok && (r.updatedCount || 0) > 0) changed = true;
       }
       try {
-        await sheetSchedule.syncFixedScheduleFromSheet(db);
+        const s = await sheetSchedule.syncFixedScheduleFromSheet(db);
+        if (s && s.ok && !s.skipped && (s.updatedCount || 0) > 0) changed = true;
       } catch {}
+      // أي تعديل في الشيت → إعادة بناء العرض اليومي في تاب «الجدول»
+      if (changed) requestSheetRebuild();
     } catch (e) {
       // silent
     } finally {

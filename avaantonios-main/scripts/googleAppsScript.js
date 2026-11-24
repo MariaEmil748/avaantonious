@@ -30,6 +30,7 @@ const TAB_DATA = 'البيانات';
 // معرف الجدول المستهدف — يخلي السكريبت يشتغل على الجدول الصح
 // حتى لو اتعمل Deploy من مشروع Apps Script مش مرتبط بالجدول مباشرة
 const SHEET_ID = '1cms7RitJ9I7rY5HaJxTsWgeyPLYKCbOVOZQ1WscEIjk';
+const SCRIPT_BUILD = '2026-11-23-A';
 
 function getSS() {
   if (SHEET_ID) return SpreadsheetApp.openById(SHEET_ID);
@@ -491,11 +492,8 @@ function buildDayViewRows(data) {
   });
 
   const calByDate = {};
-  // عمود الأعياد/الصوام: نظهر بس الفعاليات الدينية الحقيقية — مش الخدمات والحجوزات المتكررة
-  const FEAST_RE = /عيد|أعياد|صوم|صيام|آلام|قيامة|ميلاد|غطاس|نسيم|أسبوع|بشارة|تجلي|فصح|خميس|سبت النور/i;
-  const pushFeast = e => { if (FEAST_RE.test(e.text)) (calByDate[e.date] = calByDate[e.date] || []).push(e.text); };
-  collectCalendarEvents(data.cal2026, 2026).forEach(pushFeast);
-  collectCalendarEvents(data.cal2027, 2027).forEach(pushFeast);
+  collectCalendarEvents(data.cal2026, 2026).forEach(e => { (calByDate[e.date] = calByDate[e.date] || []).push(e.text); });
+  collectCalendarEvents(data.cal2027, 2027).forEach(e => { (calByDate[e.date] = calByDate[e.date] || []).push(e.text); });
 
   const allPlaces = VIEW_PLACES.concat([VIEW_OTHER]);
   const rows = [];
@@ -546,8 +544,6 @@ function padTo(row, n) {
   return out;
 }
 
-const SCRIPT_BUILD = '2026-11-19-D';
-var MERGE_ERRORS = [];
 function renderMainSheet(sheet, data, opts) {
   opts = opts || {};
   const doFormat = opts.format !== false;
@@ -602,37 +598,6 @@ function renderMainSheet(sheet, data, opts) {
   sheet.getRange(2, 1, 1, viewCols).setBackground('#0f172a').setFontColor('#ffffff').setFontWeight('bold');
   sheet.getRange(3, 1, Math.max(0, dayRows.length), 1).setNumberFormat('@');
 
-  // دمج عمودي: التاريخ واليوم يظهروا مرة واحدة لكل يوم — باقي الأعمدة صف لكل موعد/حجز
-  try {
-    // فك أي دمج قديم الأول — clearContents مش بيمسح الـ merges فبتتراكم وتبوّظ الدمج الجديد
-    sheet.getRange(3, 1, Math.max(dayRows.length + 10, sheet.getMaxRows() - 2), viewCols).breakApart();
-    // امسح كل الحدود القديمة — clearContents مش بيمسحها فبتتراكم وتظهر خطوط بين كل الصفوف
-    sheet.getRange(3, 1, Math.max(dayRows.length + 10, sheet.getMaxRows() - 2), viewCols).setBorder(false, false, false, false, false, false, null, null);
-    let segStart = 0, segKey = null;
-    for (let i = 0; i <= dayRows.length; i++) {
-      const key = i < dayRows.length ? (dayRows[i].c ? dayRows[i].c[0] : dayRows[i][0]) : null;
-      if (key === segKey) continue;
-      if (segKey !== null && i - segStart > 1) {
-        try {
-          sheet.getRange(3 + segStart, 1, i - segStart, 1).merge();
-          sheet.getRange(3 + segStart, 2, i - segStart, 1).merge();
-          sheet.getRange(3 + segStart, 1, i - segStart, 2).setVerticalAlignment('middle');
-          // خلفية خلية التاريخ/اليوم المدمجة = لون أول صف في اليوم (عشان متظهرش بيضا)
-          const k0 = dayRows[segStart] && dayRows[segStart].k;
-          const bgMap = { fixed: '#dbeafe', pending: '#fef9c3', approved: '#dcfce7', rejected: '#fee2e2', empty: '#e2e8f0' };
-          sheet.getRange(3 + segStart, 1, i - segStart, 2).setBackground(bgMap[k0] || '#f1f5f9');
-        } catch (e2) { if (MERGE_ERRORS.length < 8) MERGE_ERRORS.push(segKey + ': ' + e2); }
-      }
-      // فاصل سميك تحت آخر صف في كل يوم
-      if (segKey !== null) {
-        try {
-          sheet.getRange(3 + i - 1, 1, 1, viewCols).setBorder(null, null, true, null, null, null, '#475569', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
-        } catch (e3) { /* ignore */ }
-      }
-      segStart = i; segKey = key;
-    }
-  } catch (e) { /* الدمج مش حرج */ }
-
   // تلوين الصفوف بـ Conditional Formatting — بيشتغل أوتوماتيك ومن غير استهلاك وقت في كل توليد
   try {
     const lastRow = Math.max(sheet.getMaxRows() - 2, dayRows.length + 10);
@@ -642,7 +607,7 @@ function renderMainSheet(sheet, data, opts) {
       ['=REGEXMATCH(' + D + ',"مرفوض|rejected")', '#fee2e2'],
       ['=REGEXMATCH(' + D + ',"معلق|pending")', '#fef9c3'],
       ['=REGEXMATCH(' + D + ',"مقبول|approved")', '#dcfce7'],
-      ['=$C3="—"', '#e2e8f0'],
+      ['=$C3="—"', '#f8fafc'],
       ['=AND($C3<>"",$C3<>"—",$D3="",$E3="",$F3="")', '#e0e7ff'],
       ['=OR($D3<>"",$E3<>"")', '#dbeafe']
     ].map(r => SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(r[0]).setBackground(r[1]).setRanges(cfRange).build());
@@ -664,7 +629,6 @@ function renderMainSheet(sheet, data, opts) {
   markerStyle(bookHeaderIdx - 1, '#1e3a8a');
   dataSheet.getRange(schedHeaderIdx, 1, 1, HEADERS_SCHEDULE.length).setBackground('#7f1d1d').setFontColor('#ffffff').setFontWeight('bold');
   dataSheet.getRange(bookHeaderIdx, 1, 1, HEADERS_BOOKINGS.length).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
-  return { viewRows: viewOut.length, dataRows: dataOut.length, mergeErrors: MERGE_ERRORS.splice(0, MERGE_ERRORS.length) };
 }
 
 // =========================================================================
@@ -931,8 +895,8 @@ function doPostInner(e) {
     if (action === 'rebuildMain') {
       const main = getOrCreateMainSheet(ss);
       const d = readMainData(main);
-      const rr = renderMainSheet(main, d);
-      return replyJson({ ok: true, rebuilt: true, build: SCRIPT_BUILD, schedule: d.schedule.length, bookings: d.bookings.length, mergeErrors: (rr && rr.mergeErrors) || [] });
+      renderMainSheet(main, d);
+      return replyJson({ ok: true, rebuilt: true, build: SCRIPT_BUILD, schedule: d.schedule.length, bookings: d.bookings.length });
     }
     if (action === 'stageBuild') {
       const main = getOrCreateMainSheet(ss);
@@ -954,7 +918,7 @@ function doPostInner(e) {
       return replyJson({ ok: true, written: r });
     }
     if (action === 'whoami') {
-      return replyJson({ ok: true, code: 'rows-per-place-v3', sheetId: SHEET_ID });
+      return replyJson({ ok: true, code: 'rows-per-place-v3', build: SCRIPT_BUILD, sheetId: SHEET_ID });
     }
     if (action === 'probeSheet') {
       const info = { sheets: [] };
@@ -1128,4 +1092,36 @@ function doGet(e) {
 function replyJson(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+// =========================================================================
+// تحديث تلقائي للعرض اليومي: يشغّل installAutoRebuild مرة واحدة من Apps Script
+// وبعدين كل 5 دقايق يعيد بناء «الجدول» لو البيانات اتغيرت — حتى لو الموقع مقفول
+// =========================================================================
+function installAutoRebuild() {
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === 'scheduledSheetRebuild') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('scheduledSheetRebuild').timeBased().everyMinutes(5).create();
+}
+
+function quickHash(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+  return String(h);
+}
+
+function scheduledSheetRebuild() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const ss = getSS();
+    const main = getOrCreateMainSheet(ss);
+    const data = readMainData(main);
+    const sig = quickHash(JSON.stringify(data));
+    if (sig === props.getProperty('LAST_DATA_SIG')) return;
+    props.setProperty('LAST_DATA_SIG', sig);
+    renderMainSheet(main, data);
+  } catch (err) {
+    // صامت — المحاولة الجاية بعد 5 دقايق
+  }
 }
