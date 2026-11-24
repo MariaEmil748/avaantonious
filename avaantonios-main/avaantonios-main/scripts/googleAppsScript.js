@@ -30,7 +30,7 @@ const TAB_DATA = 'البيانات';
 // معرف الجدول المستهدف — يخلي السكريبت يشتغل على الجدول الصح
 // حتى لو اتعمل Deploy من مشروع Apps Script مش مرتبط بالجدول مباشرة
 const SHEET_ID = '1cms7RitJ9I7rY5HaJxTsWgeyPLYKCbOVOZQ1WscEIjk';
-const SCRIPT_BUILD = '2026-11-24-C';
+const SCRIPT_BUILD = '2026-11-24-D';
 
 function getSS() {
   if (SHEET_ID) return SpreadsheetApp.openById(SHEET_ID);
@@ -418,12 +418,46 @@ function writeEventTable(sheet, rows) {
     out.push(nr);
   });
   for (let i = 0; i < spare; i++) out.push(new Array(TABLE_COLS).fill(''));
-  sheet.clearContents();
-  sheet.getRange(1, 1, out.length, TABLE_COLS).setValues(out.map(r => padTo(r, TABLE_COLS)));
+
+  // reset كامل: شيل كل الدمج والتنسيقات والقوائم القديمة قبل إعادة البناء
   try {
-    sheet.getRange(1, 1, 1, TABLE_COLS).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold').setHorizontalAlignment('center');
-    sheet.getRange(2, 1, 1, TABLE_COLS).setBackground('#0f172a').setFontColor('#ffffff').setFontWeight('bold');
+    const lastRow = sheet.getMaxRows();
+    const lastCol = Math.max(sheet.getMaxColumns(), TABLE_COLS);
+    sheet.getRange(1, 1, lastRow, lastCol).getMergedRanges().forEach(m => m.breakApart());
+    sheet.getRange(1, 1, lastRow, lastCol).clearDataValidations();
+    sheet.clear();
+  } catch (e) { sheet.clearContents(); }
+
+  sheet.getRange(1, 1, out.length, TABLE_COLS).setValues(out.map(r => padTo(r, TABLE_COLS)));
+
+  try {
+    // صف العنوان — مدمج على عرض الجدول كله
+    sheet.getRange(1, 1, 1, TABLE_COLS).merge();
+    sheet.getRange(1, 1)
+      .setBackground('#1e3a8a').setFontColor('#ffffff')
+      .setFontWeight('bold').setFontSize(12)
+      .setHorizontalAlignment('center').setVerticalAlignment('middle');
+    sheet.setRowHeight(1, 36);
+
+    // صف الهيدر
+    sheet.getRange(2, 1, 1, TABLE_COLS)
+      .setBackground('#0f172a').setFontColor('#ffffff')
+      .setFontWeight('bold').setFontSize(11)
+      .setHorizontalAlignment('center').setVerticalAlignment('middle');
+    sheet.setRowHeight(2, 32);
+
+    // حدود خفيفة على الجدول كله
+    sheet.getRange(1, 1, out.length, TABLE_COLS)
+      .setBorder(true, true, true, true, true, true, '#cbd5e1', SpreadsheetApp.BorderStyle.SOLID);
+
     sheet.setFrozenRows(2);
+
+    // توسيط الأعمدة القصيرة + التفاف عمود الاسم
+    [1, 2, 3, 5, 6, 8].forEach(c => {
+      sheet.getRange(3, c, Math.max(out.length - 2, 40), 1).setHorizontalAlignment('center');
+    });
+    sheet.getRange(3, 7, Math.max(out.length - 2, 40), 1).setWrap(true).setVerticalAlignment('middle');
+    sheet.getRange(3, 4, Math.max(out.length - 2, 40), 1).setWrap(true).setVerticalAlignment('middle');
 
     // قوائم منسدلة للأعمدة: اليوم / المكان / الحالة
     const DV_ROWS = 500;
