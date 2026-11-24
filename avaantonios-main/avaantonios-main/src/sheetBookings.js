@@ -460,7 +460,7 @@ export async function syncFromSheet(db) {
     // أ) تم حذف الصف من Google Sheet
     if (!item) {
       const ageMs = Date.now() - new Date(current.created_at).getTime();
-      if (sheetMap.size > 0 && (isNaN(ageMs) || ageMs > 120000)) {
+      if (isNaN(ageMs) || ageMs > 120000) {
         db.deleteBooking(current.id);
         updatedCount++;
         changes.push({ id: current.id, service_name: current.service_name, action: 'deleted_from_sheet' });
