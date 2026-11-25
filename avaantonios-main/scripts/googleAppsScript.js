@@ -30,7 +30,7 @@ const TAB_DATA = 'البيانات';
 // معرف الجدول المستهدف — يخلي السكريبت يشتغل على الجدول الصح
 // حتى لو اتعمل Deploy من مشروع Apps Script مش مرتبط بالجدول مباشرة
 const SHEET_ID = '1cms7RitJ9I7rY5HaJxTsWgeyPLYKCbOVOZQ1WscEIjk';
-const SCRIPT_BUILD = '2026-11-24-F';
+const SCRIPT_BUILD = '2026-11-25-A';
 
 function getSS() {
   if (SHEET_ID) return SpreadsheetApp.openById(SHEET_ID);
@@ -45,15 +45,15 @@ const MARK_CAL2027 = '##CAL2027##'; // legacy
 const MARK_DATA = '##DATA##';
 
 // «الجدول» = جدول يدوي بالكامل — صف لكل موعد يكتبه المستخدم أو يجي من الموقع
-const TABLE_HEADERS = ['م', 'التاريخ', 'اليوم', 'المكان', 'من', 'إلى', 'الاسم / الحجز', 'الحالة', 'ملاحظات'];
+const TABLE_HEADERS = ['رقم الطلب / م', 'التاريخ', 'اليوم', 'المكان', 'من', 'إلى', 'اسم الخدمة / الحجز', 'مقدم الطلب', 'رقم الموبايل', 'التكرار', 'نهاية التكرار', 'الحالة', 'ملاحظات'];
 const TABLE_COLS = TABLE_HEADERS.length;
-const TABLE_TITLE = '📋 جدول المواعيد — صف لكل موعد (التاريخ | اليوم | المكان | من | إلى | الاسم / الحجز | الحالة | ملاحظات)';
+const TABLE_TITLE = '📋 جدول المواعيد — صف لكل موعد (التاريخ | اليوم | المكان | من | إلى | الخدمة | مقدم الطلب | الموبايل | التكرار | الحالة | ملاحظات)';
 
 // صفوف أمثلة — بتتكتب تلقائي لو الجدول فاضي، وبتتجاهل في المزامنة (الحالة = «مثال»)
 const EXAMPLE_ROWS = [
-  ['', '2026-12-25', '', 'كنيسة الأنبا أنطونيوس', '6:00 م', '8:00 م', '✏️ مثال: قداس عيد الميلاد', 'مثال', 'امسح الصف ده واكتب موعدك بنفس الطريقة'],
-  ['', '2027-01-07', '', 'كنيسة السيدة العذراء', '7:00 م', '9:00 م', '✏️ مثال: لقاء شبيبة', 'مثال', 'التاريخ لازم يكون بصيغة سنة-شهر-يوم'],
-  ['', '2027-02-14', '', 'مبني الخدمات – الدور الرابع والخامس', '5:00 م', '7:00 م', '✏️ مثال: بروفة فرقة', 'مثال', 'الحالة: مقبول / معلق / مرفوض']
+  ['', '2026-12-25', '', 'كنيسة الأنبا أنطونيوس', '6:00 م', '8:00 م', '✏️ مثال: قداس عيد الميلاد', 'أحمد', '01000000000', 'بدون', '', 'مثال', 'امسح الصف ده واكتب موعدك بنفس الطريقة'],
+  ['', '2027-01-07', '', 'كنيسة السيدة العذراء', '7:00 م', '9:00 م', '✏️ مثال: لقاء شبيبة', 'مريم', '01111111111', 'بدون', '', 'مثال', 'التاريخ لازم يكون بصيغة سنة-شهر-يوم'],
+  ['', '2027-02-14', '', 'مبني الخدمات – الدور الرابع والخامس', '5:00 م', '7:00 م', '✏️ مثال: بروفة فرقة أسبوعية', 'كريم', '01222222222', 'أسبوعي', '2027-06-30', 'مثال', 'الحالة: مقبول / معلق / مرفوض']
 ];
 
 const MAIN_COLS = 40; // sufficiently wide for the 2027 calendar (~26 cols) plus schedule/booking sections
@@ -374,7 +374,7 @@ function findTableHeaderRow(sheet) {
   for (let i = 0; i < vals.length; i++) {
     const cells = vals[i].map(c => String(c).trim());
     const has = t => cells.indexOf(t) >= 0;
-    if (has('التاريخ') && has('المكان') && has('الاسم / الحجز') && has('الحالة')) return i + 1; // 1-based
+    if (has('التاريخ') && has('المكان') && has('اسم الخدمة / الحجز') && has('الحالة')) return i + 1; // 1-based
   }
   return -1;
 }
@@ -460,12 +460,13 @@ function writeEventTable(sheet, rows) {
 
     sheet.setFrozenRows(2);
 
-    // توسيط الأعمدة القصيرة + التفاف عمود الاسم
-    [1, 2, 3, 5, 6, 8].forEach(c => {
+    // توسيط الأعمدة القصيرة + التفاف الأعمدة النصية الطويلة
+    [1, 2, 3, 5, 6, 9, 10, 11, 12].forEach(c => {
       sheet.getRange(3, c, Math.max(out.length - 2, 40), 1).setHorizontalAlignment('center');
     });
-    sheet.getRange(3, 7, Math.max(out.length - 2, 40), 1).setWrap(true).setVerticalAlignment('middle');
-    sheet.getRange(3, 4, Math.max(out.length - 2, 40), 1).setWrap(true).setVerticalAlignment('middle');
+    [4, 7].forEach(c => {
+      sheet.getRange(3, c, Math.max(out.length - 2, 40), 1).setWrap(true).setVerticalAlignment('middle');
+    });
 
     // قوائم منسدلة للأعمدة: اليوم / المكان / الحالة
     const DV_ROWS = 500;
@@ -487,7 +488,8 @@ function writeEventTable(sheet, rows) {
       'مبني الخدمات – الدور السابع والثامن',
       'مبني الخدمات – الدور التاسع'
     ]); // المكان
-    dv(8, ['مقبول', 'معلق', 'مرفوض']); // الحالة
+    dv(10, ['بدون', 'أسبوعي']); // التكرار
+    dv(12, ['مقبول', 'معلق', 'مرفوض']); // الحالة
 
     // قوائم الأوقات لعمودي «من» و«إلى» — من 5:00 ص لـ 11:30 م (كل نص ساعة)
     const TIMES = [];
@@ -506,8 +508,13 @@ function writeEventTable(sheet, rows) {
     sheet.getRange(2, 2).setNote('التاريخ بصيغة: YYYY-MM-DD\nمثال: 2026-12-05\nاليوم بيتكتب تلقائي — مش لازم تكتبه');
     sheet.getRange(2, 5).setNote('وقت البداية — اختار من القايمة أو اكتب مثال: 6:00 م');
     sheet.getRange(2, 6).setNote('وقت النهاية — اختار من القايمة أو اكتب مثال: 8:00 م');
-    sheet.getRange(2, 7).setNote('اسم الفعالية أو الحجز — نص حر');
-    sheet.getRange(2, 8).setNote('الحالة: مقبول / معلق / مرفوض — فاضي = مقبول');
+    sheet.getRange(2, 7).setNote('اسم الخدمة أو الفعالية — نص حر');
+    sheet.getRange(2, 8).setNote('اسم مقدم الطلب / المسؤول — نص حر');
+    sheet.getRange(2, 9).setNote('رقم الموبايل — مثال: 01000000000');
+    sheet.getRange(2, 10).setNote('التكرار: بدون / أسبوعي');
+    sheet.getRange(2, 11).setNote('لو التكرار أسبوعي — تاريخ نهاية التكرار بصيغة YYYY-MM-DD');
+    sheet.getRange(2, 12).setNote('الحالة: مقبول / معلق / مرفوض — فاضي = مقبول');
+    sheet.getRange(2, 13).setNote('أي تفاصيل إضافية');
 
     // بلوك «طريقة الكتابة» — في عمود بعيد عن الجدول عشان مايدخلش في البيانات
     const HELP_COL = TABLE_COLS + 2; // عمود K
@@ -518,12 +525,14 @@ function writeEventTable(sheet, rows) {
       '2) اليوم: بيتكتب تلقائي — سيبه فاضي',
       '3) المكان: اختار من القايمة المنسدلة',
       '4) من / إلى: اختار الوقت من القايمة',
-      '5) الاسم / الحجز: اكتب اسم الفعالية',
-      '6) الحالة: مقبول / معلق / مرفوض',
-      '7) ملاحظات: أي تفاصيل إضافية',
+      '5) اسم الخدمة / الحجز: اكتب اسم الفعالية',
+      '6) مقدم الطلب + الموبايل: بيانات whoever حجز',
+      '7) التكرار: بدون / أسبوعي (+ نهاية التكرار لو أسبوعي)',
+      '8) الحالة: مقبول / معلق / مرفوض',
+      '9) ملاحظات: أي تفاصيل إضافية',
       '',
       'مثال لصف كامل:',
-      '2026-12-05 | | | كنيسة الأنبا أنطونيوس | 6:00 م | 8:00 م | فعالية العيد | مقبول |',
+      '2026-12-05 | | | كنيسة الأنبا أنطونيوس | 6:00 م | 8:00 م | فعالية العيد | أحمد | 01000000000 | بدون | | مقبول |',
       '',
       'كل صف = موعد واحد — يظهر في الموقع تلقائياً خلال ثواني'
     ];
@@ -541,6 +550,7 @@ function writeEventTable(sheet, rows) {
 
 // صف جدول → كائن حجز
 function tableRowToBooking(r) {
+  const rep = String(r[9] || '').trim();
   return {
     id: Number(String(r[0]).replace('#', '').trim()) || String(r[0]).trim(),
     service_name: String(r[6] || '').trim(),
@@ -549,13 +559,13 @@ function tableRowToBooking(r) {
     day: String(r[2] || '').trim(),
     start: String(r[4] || '').trim(),
     end: String(r[5] || '').trim(),
-    repeat: 'none',
-    repeat_end: '',
-    requester_name: '',
-    requester_phone: '',
+    repeat: /أسبوع|اسبوع|weekly/i.test(rep) ? 'weekly' : 'none',
+    repeat_end: toDateKey(r[10]) || String(r[10] || '').trim(),
+    requester_name: String(r[7] || '').trim(),
+    requester_phone: String(r[8] || '').trim(),
     requester_username: '',
-    notes: String(r[8] || '').trim(),
-    status: String(r[7] || '').trim() || 'مقبول',
+    notes: String(r[12] || '').trim(),
+    status: String(r[11] || '').trim() || 'مقبول',
     created_at: '',
     decided_at: '',
     decided_by: ''
@@ -573,6 +583,10 @@ function bookingToTableRow(b) {
     b.start || '',
     b.end || '',
     b.service_name || '',
+    b.requester_name || '',
+    b.requester_phone || '',
+    b.repeat === 'weekly' ? 'أسبوعي' : 'بدون',
+    b.repeat === 'weekly' ? (toDateKey(b.repeat_end) || b.repeat_end || '') : '',
     b.status || 'مقبول',
     b.notes || ''
   ];
@@ -600,7 +614,7 @@ function readMainData(sheet) {
   const bookings = [];
   const seenIds = new Set();
   readEventRows(sheet).rows.forEach(r => {
-    if (String(r[7] || '').trim() === 'مثال') return; // صفوف الأمثلة — مش بتتحول لحجوزات
+    if (String(r[11] || '').trim() === 'مثال') return; // صفوف الأمثلة — مش بتتحول لحجوزات
     const b = tableRowToBooking(r);
     if (!b.service_name && !b.date) return;
     const key = String(b.id);
@@ -834,7 +848,7 @@ function renderMainSheet(sheet, data, opts) {
   try {
     const lastRow = Math.max(sheet.getMaxRows() - 2, eventCount + 40);
     const cfRange = [sheet.getRange(3, 1, lastRow, TABLE_COLS)];
-    const D = '$H3'; // عمود الحالة
+    const D = '$L3'; // عمود الحالة
     const cfRules = [
       ['=REGEXMATCH(' + D + ',"مرفوض|rejected")', '#fee2e2'],
       ['=REGEXMATCH(' + D + ',"معلق|pending")', '#fef9c3'],
@@ -844,15 +858,19 @@ function renderMainSheet(sheet, data, opts) {
     sheet.setConditionalFormatRules(cfRules);
   } catch (e) { /* CF مش حرج */ }
   sheet.setFrozenRows(2);
-  sheet.setColumnWidth(1, 55);
-  sheet.setColumnWidth(2, 110);
-  sheet.setColumnWidth(3, 90);
-  sheet.setColumnWidth(4, 230);
-  sheet.setColumnWidth(5, 110);
-  sheet.setColumnWidth(6, 110);
-  sheet.setColumnWidth(7, 320);
-  sheet.setColumnWidth(8, 90);
-  sheet.setColumnWidth(9, 260);
+  sheet.setColumnWidth(1, 45);
+  sheet.setColumnWidth(2, 105);
+  sheet.setColumnWidth(3, 85);
+  sheet.setColumnWidth(4, 190);
+  sheet.setColumnWidth(5, 85);
+  sheet.setColumnWidth(6, 85);
+  sheet.setColumnWidth(7, 240);
+  sheet.setColumnWidth(8, 120);
+  sheet.setColumnWidth(9, 110);
+  sheet.setColumnWidth(10, 80);
+  sheet.setColumnWidth(11, 100);
+  sheet.setColumnWidth(12, 80);
+  sheet.setColumnWidth(13, 200);
 
   // تنسيق بسيط لقسم المواعيد الثابتة في «البيانات»
   const markerStyle = (rowIdx, color) => {
@@ -1209,7 +1227,7 @@ function doPostInner(e) {
         if (rows[i].some(c => String(c).trim() !== '')) { idx = i + 1; break; }
       }
       const row = bookingToTableRow(b);
-      row[7] = statusToArCell(b.status);
+      row[11] = statusToArCell(b.status);
       if (idx >= rows.length) rows.push(row); else rows.splice(idx, 0, row);
       saveRows(rows);
       return replyJson({ ok: true, action: 'created', bookingId: b.id });
@@ -1226,7 +1244,7 @@ function doPostInner(e) {
       const rows = loadRows();
       const i = findRowIdx(rows, id);
       if (i >= 0) {
-        rows[i][7] = st;
+        rows[i][11] = st;
         saveRows(rows);
         return replyJson({ ok: true, action: 'status_updated', id, status: st });
       }
@@ -1237,7 +1255,7 @@ function doPostInner(e) {
       const rows = loadRows();
       const i = findRowIdx(rows, b.id);
       const row = bookingToTableRow(b);
-      row[7] = statusToArCell(b.status);
+      row[11] = statusToArCell(b.status);
       if (i >= 0) rows[i] = row; else rows.push(row);
       saveRows(rows);
       return replyJson({ ok: true, action: 'edited', bookingId: b.id });
@@ -1253,7 +1271,7 @@ function doPostInner(e) {
       const rows = (data.bookings || []).map(bb => {
         const b = bookingFromPayload(bb);
         const r = bookingToTableRow(b);
-        r[7] = statusToArCell(b.status);
+        r[11] = statusToArCell(b.status);
         return r;
       }).filter(r => String(r[6]).trim() || String(r[1]).trim());
       saveRows(rows);
