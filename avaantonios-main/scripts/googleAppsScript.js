@@ -30,7 +30,7 @@ const TAB_DATA = 'البيانات';
 // معرف الجدول المستهدف — يخلي السكريبت يشتغل على الجدول الصح
 // حتى لو اتعمل Deploy من مشروع Apps Script مش مرتبط بالجدول مباشرة
 const SHEET_ID = '1cms7RitJ9I7rY5HaJxTsWgeyPLYKCbOVOZQ1WscEIjk';
-const SCRIPT_BUILD = '2026-11-24-E';
+const SCRIPT_BUILD = '2026-11-24-F';
 
 function getSS() {
   if (SHEET_ID) return SpreadsheetApp.openById(SHEET_ID);
@@ -48,6 +48,13 @@ const MARK_DATA = '##DATA##';
 const TABLE_HEADERS = ['م', 'التاريخ', 'اليوم', 'المكان', 'من', 'إلى', 'الاسم / الحجز', 'الحالة', 'ملاحظات'];
 const TABLE_COLS = TABLE_HEADERS.length;
 const TABLE_TITLE = '📋 جدول المواعيد — صف لكل موعد (التاريخ | اليوم | المكان | من | إلى | الاسم / الحجز | الحالة | ملاحظات)';
+
+// صفوف أمثلة — بتتكتب تلقائي لو الجدول فاضي، وبتتجاهل في المزامنة (الحالة = «مثال»)
+const EXAMPLE_ROWS = [
+  ['', '2026-12-25', '', 'كنيسة الأنبا أنطونيوس', '6:00 م', '8:00 م', '✏️ مثال: قداس عيد الميلاد', 'مثال', 'امسح الصف ده واكتب موعدك بنفس الطريقة'],
+  ['', '2027-01-07', '', 'كنيسة السيدة العذراء', '7:00 م', '9:00 م', '✏️ مثال: لقاء شبيبة', 'مثال', 'التاريخ لازم يكون بصيغة سنة-شهر-يوم'],
+  ['', '2027-02-14', '', 'مبني الخدمات – الدور الرابع والخامس', '5:00 م', '7:00 م', '✏️ مثال: بروفة فرقة', 'مثال', 'الحالة: مقبول / معلق / مرفوض']
+];
 
 const MAIN_COLS = 40; // sufficiently wide for the 2027 calendar (~26 cols) plus schedule/booking sections
 
@@ -394,7 +401,8 @@ function writeEventTable(sheet, rows) {
   // شيل الصفوف الفاضية من الآخر + سطور فاضية زائدة
   let end = rows.length;
   while (end > 0 && rows[end - 1].every(c => String(c).trim() === '')) end--;
-  const kept = rows.slice(0, end);
+  let kept = rows.slice(0, end);
+  if (kept.length === 0) kept = EXAMPLE_ROWS.map(r => r.slice()); // جدول فاضي → نعرض الأمثلة كقالب
   const spare = Math.max(0, 20 - kept.length);
   const out = [[TABLE_TITLE], TABLE_HEADERS];
   // احفظ الـ ids الموجودة (حجوزات الموقع ليها ids كبيرة) — ودي بس للصفوف اللي ملهاش رقم
@@ -592,6 +600,7 @@ function readMainData(sheet) {
   const bookings = [];
   const seenIds = new Set();
   readEventRows(sheet).rows.forEach(r => {
+    if (String(r[7] || '').trim() === 'مثال') return; // صفوف الأمثلة — مش بتتحول لحجوزات
     const b = tableRowToBooking(r);
     if (!b.service_name && !b.date) return;
     const key = String(b.id);
@@ -829,7 +838,8 @@ function renderMainSheet(sheet, data, opts) {
     const cfRules = [
       ['=REGEXMATCH(' + D + ',"مرفوض|rejected")', '#fee2e2'],
       ['=REGEXMATCH(' + D + ',"معلق|pending")', '#fef9c3'],
-      ['=REGEXMATCH(' + D + ',"مقبول|approved")', '#dcfce7']
+      ['=REGEXMATCH(' + D + ',"مقبول|approved")', '#dcfce7'],
+      ['=REGEXMATCH(' + D + ',"مثال|example")', '#e0e7ff']
     ].map(r => SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(r[0]).setBackground(r[1]).setRanges(cfRange).build());
     sheet.setConditionalFormatRules(cfRules);
   } catch (e) { /* CF مش حرج */ }
