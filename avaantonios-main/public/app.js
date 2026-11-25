@@ -169,6 +169,8 @@ async function init() {
   $('#b-date').value = new Date().toISOString().slice(0, 10);
 
   $('#f-season').onchange = $('#f-day').onchange = $('#f-place').onchange = $('#f-type').onchange = loadSchedule;
+  const fRange = $('#f-range');
+  if (fRange) fRange.onchange = loadSchedule;
   const fDate = $('#f-date');
   if (fDate) fDate.onchange = () => {
     // لو اتختار تاريخ محدد → اليوم بيتحدد تلقائيًا من التاريخ
@@ -342,6 +344,7 @@ function showCalendarModal(cal) {
 
 // ---------- schedule view ----------
 async function loadSchedule() {
+  const fRangeEl = $('#f-range');
   const p = new URLSearchParams();
   const seasonId = $('#f-season').value; if (seasonId) p.set('seasonId', seasonId);
   let day = $('#f-day').value;
@@ -354,12 +357,17 @@ async function loadSchedule() {
   const { body } = await api('/api/schedule?' + p);
   state.schedule = body;
 
+  // الفترة: أسبوع من النهارده (افتراضي) أو السنة كلها — تاريخ محدد بيغلّب عليهم
+  const range = (fRangeEl && fRangeEl.value) || 'week';
+  const rangeFrom = (!dateStr && range === 'week') ? new Date().toLocaleDateString('en-CA') : '';
+  const rangeTo = (!dateStr && range === 'week') ? (() => { const d = new Date(); d.setDate(d.getDate() + 6); return d.toLocaleDateString('en-CA'); })() : '';
+
   // الحجوزات المعتمدة القادمة تُدمج داخل أنشطة اليوم (حسب يوم الأسبوع)
   let approved = [];
   if (!type || type === 'booking') {
     const bp = new URLSearchParams();
-    // من أول السنة المعروضة في التقويم — مش من النهارده عشان الحجوزات الماضية من 2026 تظهر برضه
-    bp.set('from', dateStr || '2026-01-01');
+    // أسبوع → من النهارده | سنة → من أول 2026 | تاريخ محدد → منه
+    bp.set('from', dateStr || rangeFrom || '2026-01-01');
     if (placeId) bp.set('placeId', placeId);
     const { status, body: ab } = await api('/api/approved-bookings?' + bp);
     if (status === 200 && Array.isArray(ab)) approved = ab;
@@ -387,7 +395,7 @@ async function loadSchedule() {
     noteEl.classList.remove('hidden');
   } else noteEl.classList.add('hidden');
 
-  renderSchedule($('#schedule-container'), (type === 'booking' ? [] : body), season, approved, { date: dateStr || '', weekday: day });
+  renderSchedule($('#schedule-container'), (type === 'booking' ? [] : body), season, approved, { date: dateStr || '', weekday: day, from: rangeFrom, to: rangeTo });
 }
 
 function renderSchedule(container, rows, season, approved = [], opts = {}) {
@@ -431,9 +439,13 @@ function renderSchedule(container, rows, season, approved = [], opts = {}) {
 
   let dateKeys = Object.keys(byDate).sort();
   if (opts.date) dateKeys = dateKeys.filter(k => k === opts.date);
-  else if (opts.weekday !== null && opts.weekday !== undefined && opts.weekday !== '') {
-    const wdN = Number(opts.weekday);
-    dateKeys = dateKeys.filter(k => new Date(k + 'T00:00:00').getDay() === wdN);
+  else {
+    if (opts.from) dateKeys = dateKeys.filter(k => k >= opts.from);
+    if (opts.to) dateKeys = dateKeys.filter(k => k <= opts.to);
+    if (opts.weekday !== null && opts.weekday !== undefined && opts.weekday !== '') {
+      const wdN = Number(opts.weekday);
+      dateKeys = dateKeys.filter(k => new Date(k + 'T00:00:00').getDay() === wdN);
+    }
   }
   if (!dateKeys.length) { container.innerHTML = '<p class="muted">لا توجد مواعيد مطابقة.</p>'; return; }
   if (season) {
