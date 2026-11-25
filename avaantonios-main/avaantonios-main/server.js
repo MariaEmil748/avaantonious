@@ -95,27 +95,32 @@ async function autoSyncWithSheet(minIntervalMs = 5000) {
   const now = Date.now();
   if (now - lastSyncAt < minIntervalMs) return;
   if (syncPromise) return syncPromise;
-  lastSyncAt = now;
   syncPromise = (async () => {
     let changed = false;
     try {
-      if (sheetBookings.isConfigured()) {
-        const r = await sheetBookings.syncFromSheet(db);
-        if (r && r.ok && (r.updatedCount || 0) > 0) changed = true;
-      }
-      try {
-        const s = await sheetSchedule.syncFixedScheduleFromSheet(db);
-        if (s && s.ok && !s.skipped && (s.updatedCount || 0) > 0) changed = true;
-      } catch {}
+      // المزامنتان بالتوازي عشان سرعات الـ webhook تبقى الحد الأقصى مش مجموعهم
+      const [r, s] = await Promise.all([
+        sheetBookings.isConfigured() ? sheetBookings.syncFromSheet(db) : Promise.resolve(null),
+        sheetSchedule.syncFixedScheduleFromSheet(db).catch(() => null)
+      ]);
+      if (r && r.ok && (r.updatedCount || 0) > 0) changed = true;
+      if (s && s.ok && !s.skipped && (s.updatedCount || 0) > 0) changed = true;
       // أي تعديل في الشيت → إعادة بناء العرض اليومي في تاب «الجدول»
       if (changed) requestSheetRebuild();
     } catch (e) {
       // silent
     } finally {
       syncPromise = null;
+      lastSyncAt = Date.now(); // آخر مزامنة *مكتملة* — كده الطلبات المتتالية مبتعملش sync مزدوج
     }
   })();
   return syncPromise;
+}
+// بينتظر المزامنة بس بحد أقصى — لو الشيت بطيء/واقع بيرجع بالبيانات المحلية
+async function awaitSheetSync(maxWaitMs = 60000) {
+  try {
+    await Promise.race([autoSyncWithSheet(8000), new Promise(r => setTimeout(r, maxWaitMs))]);
+  } catch (e) {}
 }
 setInterval(() => autoSyncWithSheet(8000), 8000);
 
@@ -145,7 +150,7 @@ async function api(req, res, path, q) {
   }
 
   if (path === '/api/schedule' && method === 'GET') {
-    autoSyncWithSheet(3000); // غير حاجب — المزامنة الدورية بتحدث البيانات كل 8 ثواني
+    await awaitSheetSync(); // مستني آخر بيانات الشيت قبل العرض — مش بيعرض بيانات قديمة
     const rows = db.listSchedule({ seasonId: q.get('seasonId') || null, day: q.get('day'), placeId: q.get('placeId') || null, type: q.get('type') || null });
     if (!canSeePhones(req)) for (const r of rows) { r.has_phone = !!r.phone; r.phone = ''; }
     return json(res, 200, rows);
@@ -157,7 +162,7 @@ async function api(req, res, path, q) {
   }
 
   if (path === '/api/approved-bookings' && method === 'GET') {
-    autoSyncWithSheet(3000); // غير حاجب
+    await awaitSheetSync(); // مستني آخر بيانات الشيت قبل العرض
     const from = q.get('from') || new Date().toISOString().slice(0, 10);
     const rows = db.listApprovedUpcoming({ from, placeId: q.get('placeId') || null });
     if (!canSeePhones(req)) for (const r of rows) { r.has_contact = !!r.requester_phone; r.requester_phone = ''; }
