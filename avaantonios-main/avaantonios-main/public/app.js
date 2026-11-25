@@ -358,8 +358,8 @@ async function loadSchedule() {
   let approved = [];
   if (!type || type === 'booking') {
     const bp = new URLSearchParams();
-    const todayStr = new Date().toLocaleDateString('en-CA');
-    bp.set('from', dateStr || todayStr);
+    // من أول السنة المعروضة في التقويم — مش من النهارده عشان الحجوزات الماضية من 2026 تظهر برضه
+    bp.set('from', dateStr || '2026-01-01');
     if (placeId) bp.set('placeId', placeId);
     const { status, body: ab } = await api('/api/approved-bookings?' + bp);
     if (status === 200 && Array.isArray(ab)) approved = ab;
